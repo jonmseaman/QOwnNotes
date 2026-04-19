@@ -28,6 +28,7 @@ ui_*.h
 secrets/*
 .shared
 __pycache__
+.DS_Store
 
 # Devenv
 .devenv*
