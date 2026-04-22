@@ -43,6 +43,7 @@
 #include <QToolTip>
 #include <QUrl>
 #include <QVariant>
+#include <QVector>
 #include <QWidgetAction>
 #include <algorithm>
 
@@ -66,6 +67,149 @@ namespace {
 constexpr int kMarkdownLspDiagnosticProperty = QTextFormat::UserProperty + 1;
 constexpr int kFoldIndicatorPadding = 4;
 QHash<QString, QSet<QString>> s_foldedHeadingStateByNoteReference;
+
+struct InnerSelectionCandidate {
+    int innerStart = -1;
+    int innerEnd = -1;
+
+    bool isValid() const { return innerStart >= 0 && innerEnd >= innerStart; }
+    int length() const { return innerEnd - innerStart; }
+};
+
+static void addSelectionCandidate(InnerSelectionCandidate &best, const int innerStart,
+                                  const int innerEnd, const int targetStart, const int targetEnd) {
+    if (innerStart < 0 || innerEnd < innerStart || innerStart > targetStart ||
+        innerEnd < targetEnd) {
+        return;
+    }
+
+    if (!best.isValid() || (innerEnd - innerStart) < best.length() ||
+        ((innerEnd - innerStart) == best.length() && innerStart > best.innerStart)) {
+        best.innerStart = innerStart;
+        best.innerEnd = innerEnd;
+    }
+}
+
+static bool isEscapedToken(const QString &text, const int pos) {
+    int backslashCount = 0;
+
+    for (int i = pos - 1; i >= 0 && text.at(i) == QLatin1Char('\\'); --i) {
+        ++backslashCount;
+    }
+
+    return (backslashCount % 2) == 1;
+}
+
+static void addStackedTokenCandidates(const QString &text, const QString &openToken,
+                                      const QString &closeToken, const int targetStart,
+                                      const int targetEnd, InnerSelectionCandidate &best) {
+    QVector<int> openPositions;
+    const int maxStart = text.size() - std::min(openToken.size(), closeToken.size());
+
+    for (int i = 0; i <= maxStart;) {
+        if (text.mid(i, closeToken.size()) == closeToken && !openPositions.isEmpty()) {
+            const int openPos = openPositions.takeLast();
+            addSelectionCandidate(best, openPos + openToken.size(), i, targetStart, targetEnd);
+            i += closeToken.size();
+            continue;
+        }
+
+        if (text.mid(i, openToken.size()) == openToken) {
+            openPositions.append(i);
+            i += openToken.size();
+            continue;
+        }
+
+        ++i;
+    }
+}
+
+static void addRepeatedTokenCandidates(const QString &text, const QString &token,
+                                       const int targetStart, const int targetEnd,
+                                       InnerSelectionCandidate &best, const bool escapable) {
+    int openPos = -1;
+
+    for (int i = 0; i <= text.size() - token.size();) {
+        if (text.mid(i, token.size()) != token || (escapable && isEscapedToken(text, i))) {
+            ++i;
+            continue;
+        }
+
+        if (openPos < 0) {
+            openPos = i;
+        } else {
+            addSelectionCandidate(best, openPos + token.size(), i, targetStart, targetEnd);
+            openPos = -1;
+        }
+
+        i += token.size();
+    }
+}
+
+static void addMarkdownRangeCandidate(const QString &blockText,
+                                      MarkdownHighlighter *markdownHighlighter,
+                                      const MarkdownHighlighter::RangeType rangeType,
+                                      const int blockNumber, const int probePosition,
+                                      const int targetStart, const int targetEnd,
+                                      InnerSelectionCandidate &best) {
+    if (!markdownHighlighter || probePosition < 0 || probePosition >= blockText.size()) {
+        return;
+    }
+
+    const auto range = markdownHighlighter->getSpanRange(rangeType, blockNumber, probePosition);
+    if (range.first < 0 || range.second < 0 || range.first >= blockText.size()) {
+        return;
+    }
+
+    if (rangeType == MarkdownHighlighter::RangeType::CodeSpan) {
+        int delimiterLength = 0;
+
+        while ((range.first + delimiterLength) < blockText.size() &&
+               blockText.at(range.first + delimiterLength) == QLatin1Char('`')) {
+            ++delimiterLength;
+        }
+
+        if (delimiterLength > 0) {
+            addSelectionCandidate(best, range.first + delimiterLength, range.second, targetStart,
+                                  targetEnd);
+        }
+
+        return;
+    }
+
+    const QChar marker = blockText.at(range.first);
+    if (rangeType != MarkdownHighlighter::RangeType::Emphasis ||
+        (marker != QLatin1Char('*') && marker != QLatin1Char('_'))) {
+        return;
+    }
+
+    int leftMarkerStart = range.first;
+    while (leftMarkerStart > 0 && blockText.at(leftMarkerStart - 1) == marker) {
+        --leftMarkerStart;
+    }
+
+    const int delimiterLength = range.first - leftMarkerStart + 1;
+    int rightMarkerIndex = range.second;
+
+    if (rightMarkerIndex >= blockText.size() || blockText.at(rightMarkerIndex) != marker) {
+        --rightMarkerIndex;
+    }
+
+    const int rightMarkerStart = rightMarkerIndex - delimiterLength + 1;
+    if (delimiterLength <= 0 || rightMarkerStart < 0 || rightMarkerIndex < 0 ||
+        blockText.at(rightMarkerIndex) != marker) {
+        return;
+    }
+
+    for (int i = rightMarkerStart; i <= rightMarkerIndex; ++i) {
+        if (blockText.at(i) != marker) {
+            return;
+        }
+    }
+
+    addSelectionCandidate(best, leftMarkerStart + delimiterLength, rightMarkerStart, targetStart,
+                          targetEnd);
+}
 
 struct WikiLinkCompletionContext {
     QString filterText;
@@ -688,6 +832,75 @@ void QOwnNotesMarkdownTextEdit::toggleCase() {
     setTextCursor(c);
 }
 
+void QOwnNotesMarkdownTextEdit::selectEnclosedText() {
+    QTextCursor cursor = textCursor();
+    const QTextBlock block = cursor.block();
+    if (!block.isValid()) {
+        return;
+    }
+
+    const QString blockText = block.text();
+    if (blockText.isEmpty()) {
+        return;
+    }
+
+    const int blockStart = block.position();
+    int targetStart = cursor.positionInBlock();
+    int targetEnd = targetStart;
+
+    if (cursor.hasSelection()) {
+        QTextCursor selectionStartCursor(document());
+        selectionStartCursor.setPosition(cursor.selectionStart());
+
+        const int selectionEndPos = std::max(cursor.selectionStart(), cursor.selectionEnd() - 1);
+        QTextCursor selectionEndCursor(document());
+        selectionEndCursor.setPosition(selectionEndPos);
+
+        if (selectionStartCursor.block() != block || selectionEndCursor.block() != block) {
+            return;
+        }
+
+        targetStart = cursor.selectionStart() - blockStart;
+        targetEnd = cursor.selectionEnd() - blockStart;
+    }
+
+    InnerSelectionCandidate bestCandidate;
+    const int lastBlockPosition = blockText.size() - 1;
+    const int probePosition =
+        qBound(0, std::min(targetStart, lastBlockPosition), lastBlockPosition);
+
+    addMarkdownRangeCandidate(blockText, highlighter(), MarkdownHighlighter::RangeType::CodeSpan,
+                              block.blockNumber(), probePosition, targetStart, targetEnd,
+                              bestCandidate);
+    addMarkdownRangeCandidate(blockText, highlighter(), MarkdownHighlighter::RangeType::Emphasis,
+                              block.blockNumber(), probePosition, targetStart, targetEnd,
+                              bestCandidate);
+
+    addStackedTokenCandidates(blockText, QStringLiteral("[["), QStringLiteral("]]"), targetStart,
+                              targetEnd, bestCandidate);
+    addStackedTokenCandidates(blockText, QStringLiteral("("), QStringLiteral(")"), targetStart,
+                              targetEnd, bestCandidate);
+    addStackedTokenCandidates(blockText, QStringLiteral("["), QStringLiteral("]"), targetStart,
+                              targetEnd, bestCandidate);
+    addStackedTokenCandidates(blockText, QStringLiteral("{"), QStringLiteral("}"), targetStart,
+                              targetEnd, bestCandidate);
+
+    addRepeatedTokenCandidates(blockText, QStringLiteral("~~"), targetStart, targetEnd,
+                               bestCandidate, false);
+    addRepeatedTokenCandidates(blockText, QStringLiteral("\""), targetStart, targetEnd,
+                               bestCandidate, true);
+    addRepeatedTokenCandidates(blockText, QStringLiteral("'"), targetStart, targetEnd,
+                               bestCandidate, true);
+
+    if (!bestCandidate.isValid()) {
+        return;
+    }
+
+    cursor.setPosition(blockStart + bestCandidate.innerStart);
+    cursor.setPosition(blockStart + bestCandidate.innerEnd, QTextCursor::KeepAnchor);
+    setTextCursor(cursor);
+}
+
 void QOwnNotesMarkdownTextEdit::insertCodeBlock() {
     QTextCursor c = this->textCursor();
     QString selectedText = c.selection().toPlainText();
@@ -751,6 +964,13 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
         return;
     }
 
+    QString wikiFilterText;
+    int wikiReplaceLength = 0;
+    QStringList wikiResultList;
+    const bool wikiContextActive =
+        Note::isWikiLinkSupportEnabled() &&
+        wikiLinkAutoComplete(wikiResultList, wikiFilterText, wikiReplaceLength);
+
     if (_markdownLspEnabled && _markdownLspClient && !_markdownLspUri.isEmpty()) {
         const QTextCursor cursor = textCursor();
         const int line = cursor.blockNumber();
@@ -762,8 +982,9 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
         }
     }
 
-    // try to open a link at the cursor position
-    if (openLinkAtCursorPosition()) {
+    // Don't treat typing inside a wiki-link target as an activation request.
+    // This prevents completing the leading "[[" from opening or creating the note.
+    if (!wikiContextActive && openLinkAtCursorPosition()) {
         MainWindow::instance()->showStatusBarMessage(
             tr("An url was opened at the current cursor position"), QStringLiteral("📃"), 5000);
         return;
@@ -775,13 +996,6 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
     }
 
     QMenu menu;
-
-    QString wikiFilterText;
-    int wikiReplaceLength = 0;
-    QStringList wikiResultList;
-    const bool wikiContextActive =
-        Note::isWikiLinkSupportEnabled() &&
-        wikiLinkAutoComplete(wikiResultList, wikiFilterText, wikiReplaceLength);
 
     if (wikiContextActive) {
         for (const QString &text : Utils::asConst(wikiResultList)) {
@@ -2259,6 +2473,8 @@ void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
 
     // add some other existing menu entries
     auto mainWindow = MainWindow::instance();
+    QMenu *selectMenu = menu->addMenu(tr("Select"));
+    selectMenu->addAction(mainWindow->selectEnclosedTextAction());
     menu->addAction(mainWindow->pasteImageAction());
     menu->addAction(mainWindow->autocompleteAction());
     menu->addAction(mainWindow->splitNoteAtPosAction());

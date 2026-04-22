@@ -1,12 +1,48 @@
 # QOwnNotes Changelog
 
+## 26.4.18
+
+- Fixed the main menu action **Scripting > Find scripts in script repository**,
+  which stopped opening the script repository after the settings dialog pages
+  were moved into dedicated widgets (for [#3570](https://github.com/pbek/QOwnNotes/issues/3570))
+- Added an optional **Import metadata as YAML front matter** mode to the
+  **Evernote import** dialog, so imported note metadata can be stored in hidden
+  front matter instead of a visible Markdown table when that format is preferred
+  (for [#1404](https://github.com/pbek/QOwnNotes/issues/1404))
+- Added a new **Edit > Select > Select enclosed text** action that selects the
+  innermost text surrounded by common Markdown delimiters, quotes, or brackets,
+  making Vim-like "select inner block" selection available from the menu and a
+  shortcut (for [#1555](https://github.com/pbek/QOwnNotes/issues/1555))
+- Conflicted copies of the note folder database `notes.sqlite` can now merge
+  missing tags and note tag assignments into the current database before the
+  conflicted copy is removed, so sync conflicts no longer force you to choose
+  between keeping one side's tag changes or deleting the conflicted database
+  copy outright (for [#1625](https://github.com/pbek/QOwnNotes/issues/1625))
+
 ## 26.4.17
 
+- Fixed wiki-link auto-completion so finishing a link by typing the missing
+  opening `[[` no longer opens or creates the target note as if the link had
+  been activated while editing (for [#3574](https://github.com/pbek/QOwnNotes/issues/3574))
+- Fixed sorting by the **Trashed** date in the **Locally trashed notes** dialog,
+  which could be ordered incorrectly because the internal millisecond
+  timestamps were compared as truncated 32-bit integers instead of full 64-bit
+  values (for [#3573](https://github.com/pbek/QOwnNotes/issues/3573))
+- Renamed the **Local trash** settings page to **Trash**, added a Qt 5.15+
+  **trash mode** selector for **No trashing**, **System trash**, and
+  **Local trash**, switched note deletion to `QFile::moveToTrash()` when
+  **System trash** is selected, and now only show the **Local trash** action
+  when local trash support is enabled (for [#3573](https://github.com/pbek/QOwnNotes/issues/3573))
+- Restored the long-standing **note editor** behavior where pressing the bare
+  `Up` arrow on the first line moves the cursor to the start of that line, by
+  handling the boundary navigation in `keyPressEvent` so it also works again on
+  macOS builds with Qt6 (for [#3572](https://github.com/pbek/QOwnNotes/issues/3572))
 - Fixed a build error on older Qt5 systems after the **Settings dialog** widget
   refactoring by explicitly including `QDebug` in
   `widgets/settings/debugsettingswidget.cpp`, so Ubuntu Focal and Debian 10
   builds no longer fail with an incomplete `QDebug` type during the `#3570`
   changes (for [#3570](https://github.com/pbek/QOwnNotes/issues/3570))
+- Added more Polish, Portuguese, Brazilian, Italian, Russian, Spanish, German, Chinese Simplified, French translation (thank you, pbek, jd-develop, AlejandroMoc)
 
 ## 26.4.16
 

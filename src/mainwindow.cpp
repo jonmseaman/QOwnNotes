@@ -2619,6 +2619,8 @@ void MainWindow::readSettingsFromSettingsDialog(const bool isAppLaunch) {
     ui->actionShow_note_git_versions_external->setVisible(false);
 #endif
 
+    updateLocalTrashActionVisibility();
+
     // show or hide 'Find or create ...' search in Note Subfolders & Tags Panels
     ui->noteSubFolderLineEdit->setHidden(
         settings.value(QStringLiteral("noteSubfoldersPanelHideSearch")).toBool());
@@ -2725,6 +2727,10 @@ void MainWindow::readSettingsFromSettingsDialog(const bool isAppLaunch) {
     if (!startAutoReadOnlyModeIfEnabled()) {
         _autoReadOnlyModeTimer->stop();
     }
+}
+
+void MainWindow::updateLocalTrashActionVisibility() {
+    ui->actionShow_local_trash->setVisible(TrashItem::isLocalTrashEnabled());
 }
 
 /**
@@ -3879,7 +3885,7 @@ void MainWindow::openSettingsDialog(int page, bool openScriptRepository) {
     QPointer<SettingsDialog> settingsDialog = new SettingsDialog(page, this);
 
     if (openScriptRepository) {
-        QTimer::singleShot(10, settingsDialog, SLOT(searchScriptInRepository()));
+        QTimer::singleShot(10, settingsDialog, &SettingsDialog::searchScriptInRepository);
     }
 
     // open the settings dialog
@@ -4572,6 +4578,10 @@ void MainWindow::on_actionInsert_note_link_triggered() {
 }
 
 void MainWindow::on_action_DuplicateText_triggered() { activeNoteTextEdit()->duplicateText(); }
+
+void MainWindow::on_actionSelect_enclosed_text_triggered() {
+    activeNoteTextEdit()->selectEnclosedText();
+}
 
 void MainWindow::on_action_Back_in_note_history_triggered() {
     if (this->noteHistory.back()) {
@@ -7774,6 +7784,8 @@ QAction *MainWindow::pasteImageAction() { return ui->actionPaste_image; }
 QAction *MainWindow::autocompleteAction() { return ui->actionAutocomplete; }
 
 QAction *MainWindow::splitNoteAtPosAction() { return ui->actionSplit_note_at_cursor_position; }
+
+QAction *MainWindow::selectEnclosedTextAction() { return ui->actionSelect_enclosed_text; }
 
 QAction *MainWindow::findNoteAction() { return ui->action_Find_note; }
 
