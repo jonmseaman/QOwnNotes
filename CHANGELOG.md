@@ -1,5 +1,105 @@
 # QOwnNotes Changelog
 
+## 26.4.23
+
+- Fixed shortcuts not being saved or restored in the **Shortcuts** settings;
+  `storeShortcutSettings` now iterates the actual menu actions (mirroring how
+  `initShortcuts` reads them) and looks up the corresponding widgets in the
+  tree by action name, and shortcut values are stored as strings to match the
+  format expected by `initShortcuts` (for [#3584](https://github.com/pbek/QOwnNotes/issues/3584))
+- Fixed a crash when assigning a shortcut in the **Shortcuts** settings;
+  `keySequenceEvent` and `findKeySequenceWidget` now use recursive tree
+  traversal to handle the multi-level menu hierarchy correctly
+  (for [#3584](https://github.com/pbek/QOwnNotes/issues/3584))
+- Fixed a possible crash that occurred when Qt's internal style machinery was still
+  processing a system color scheme change event while `applyDarkModeSettings()`
+  was called synchronously, causing a SIGSEGV in QtWidgets; the UI update is now
+  deferred via `QTimer::singleShot` so it runs after the current event is fully
+  processed (for [#3578](https://github.com/pbek/QOwnNotes/issues/3578))
+- Added a **Show all LSP server log output in debug log** checkbox to the
+  **Markdown language server** section in the **Editor** settings; when
+  enabled, every line written to the LSP server's stderr is forwarded to
+  the Qt debug log so the full server output is visible (e.g. via
+  `QT_LOGGING_RULES="*.debug=true"`); the checkbox is disabled when the
+  LSP is not enabled (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+  - All Markdown LSP server stderr output is then forwarded to the debug log
+    (via `qDebug`) so the full server log is visible when running QOwnNotes
+    with debug output enabled; previously only lines containing `ERR`/`ERROR`
+    were forwarded
+  - Added debug logging when `textDocument/publishDiagnostics` notifications
+    are received from the Markdown LSP server and when they are applied to the
+    note text edit, to help diagnose why error markers may not appear; note that
+    `marksman` (the default LSP server) does not publish diagnostics — it
+    focuses on cross-reference and wiki-link completion only; to get real-time
+    wave-underline error markers in the note editor, configure a linting LSP
+    such as `rumdl` (command: `rumdl`, argument: `server`) which provides 71
+    Markdown lint rules and publishes `textDocument/publishDiagnostics`
+
+## 26.4.22
+
+- The **Shortcuts** settings action name tree now shows the full menu hierarchy,
+  with submenus rendered as nested tree nodes so all levels of the menu structure
+  are visible (for [#3583](https://github.com/pbek/QOwnNotes/issues/3583))
+- Added a new **Note text edit** submenu to the **Edit** main menu that exposes
+  all note text edit context menu actions (link, block quote, list operations,
+  Markdown operations, search text on web, find note, copy code block) so they
+  can be reached from the menu bar and have shortcuts assigned in the
+  **Shortcuts** settings; the submenu is only enabled when the note edit panel
+  is visible (for [#3582](https://github.com/pbek/QOwnNotes/issues/3582))
+- Added more French, Spanish, Korean translation (thank you, jd-develop,
+  AlejandroMoc, VenusGirl)
+
+## 26.4.21
+
+- Added a new **Markdown operations** submenu to the **note text edit** context
+  menu with actions to increase or decrease the heading depth of selected ATX
+  and setext Markdown headings (for [#672](https://github.com/pbek/QOwnNotes/issues/672))
+- The **note link dialog** note list now also shows the `Modified` column even
+  when note sub-folder support is disabled (for [#1679](https://github.com/pbek/QOwnNotes/issues/1679))
+- Fixed auto-detected links inside italic or bold Markdown text so trailing
+  brackets and emphasis markers are no longer treated as part of the URL target
+  or link highlight (for [#3580](https://github.com/pbek/QOwnNotes/issues/3580))
+- Fixed the **Harper** settings status row so the `Status:` label is aligned with
+  the status text again and the result text no longer repeats the `Status:`
+  prefix in the **Settings dialog** (for [#3576](https://github.com/pbek/QOwnNotes/issues/3576))
+- Updated the **Harper** linter list in the **Settings dialog** to remove the
+  upstream-deleted `Matcher` and `Wrong Quotes` rules and add `Quote Spacing`,
+  `No French Spaces`, and `Wrong Apostrophe` instead (for
+  [#3576](https://github.com/pbek/QOwnNotes/issues/3576))
+
+## 26.4.20
+
+- Added the linked note's tags to the **note link dialog** list, so notes can be
+  distinguished more easily before inserting a link (for [#1679](https://github.com/pbek/QOwnNotes/issues/1679))
+- Added cross-platform **system color scheme** detection for Qt 6.5+ builds at
+  startup and while the app is running, so QOwnNotes can now also ask on macOS
+  and other supported platforms whether it should switch dark mode when the
+  system appearance changes; the live prompt mentions that updating the UI
+  takes a short while (for [#3578](https://github.com/pbek/QOwnNotes/issues/3578))
+- Added support for **[Harper](https://github.com/automattic/harper)** as an
+  offline, privacy-first **grammar checker**, available as an alternative to
+  LanguageTool (for [#3576](https://github.com/pbek/QOwnNotes/issues/3576))
+  - Also see [Harper integration documentation](https://www.qownnotes.org/editor/harper.html)
+    for setup instructions and usage details
+- Added persistence for custom **column order and widths** in multi-column
+  list and tree headers such as the **note link**, **Todo**, **Nextcloud Deck**,
+  **locally trashed notes** and **shortcuts** dialogs, so manual header rearrangements
+  survive reopening the views (for [#3579](https://github.com/pbek/QOwnNotes/issues/3579))
+- Fixed note editor cursor navigation so pressing `Up` at the first
+  character of the second line now correctly moves the cursor to the first line
+  again (for [#3572](https://github.com/pbek/QOwnNotes/issues/3572))
+
+## 26.4.19
+
+- Fixed note folder switching so all modified notes are written to disk before
+  another note folder becomes active, preventing edited notes from being saved
+  into the newly selected folder instead of their original one (for
+  [#3575](https://github.com/pbek/QOwnNotes/issues/3575))
+- Fixed the **Navigation panel** heading parser so lines inside fenced code
+  blocks are no longer interpreted as Markdown headings, preventing entries
+  like `# ls -l` or `## test` from appearing in the heading tree (for
+  [#3577](https://github.com/pbek/QOwnNotes/issues/3577))
+
 ## 26.4.18
 
 - Fixed the main menu action **Scripting > Find scripts in script repository**,

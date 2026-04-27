@@ -76,6 +76,10 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
      */
     static QOwnNotesMarkdownTextEdit *getActiveEditorForAutocomplete();
 
+    QTextCursor fullLineSelectionCursor() const;
+    bool replaceFullLineSelection(const QString &text);
+    bool changeHeadingDepthOfSelection(int levelDelta);
+
     /**
      * Inserts an empty code block
      */
@@ -171,8 +175,6 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     void setFormatStyle(MarkdownHighlighter::HighlighterState index);
 
     void onContextMenu(QPoint pos);
-    QTextCursor fullLineSelectionCursor() const;
-    bool replaceFullLineSelection(const QString &text);
 
     void overrideFontSizeStyle(int fontSize);
 
@@ -181,6 +183,11 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     void addLanguageToolMenuSection(QMenu *menu, const QTextCursor &cursorAtMouse,
                                     const QTextCursor &selectedCursor, bool &hasEntries);
     void applyLanguageToolReplacement(const QTextCursor &cursor, const QString &replacement);
+#endif
+#ifdef HARPER_ENABLED
+    void addHarperMenuSection(QMenu *menu, const QTextCursor &cursorAtMouse,
+                              const QTextCursor &selectedCursor, bool &hasEntries);
+    void applyHarperReplacement(const QTextCursor &cursor, const QString &replacement);
 #endif
 
     /**

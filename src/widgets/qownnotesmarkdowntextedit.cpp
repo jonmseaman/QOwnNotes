@@ -45,6 +45,7 @@
 #include <QVariant>
 #include <QVector>
 #include <QWidgetAction>
+#include <QtGlobal>
 #include <algorithm>
 
 #include "entities/notefolder.h"
@@ -53,6 +54,9 @@
 #include "mainwindow.h"
 #ifdef LANGUAGETOOL_ENABLED
 #include "services/languagetoolchecker.h"
+#endif
+#ifdef HARPER_ENABLED
+#include "services/harperchecker.h"
 #endif
 #include "services/markdownlspclient.h"
 #include "services/nextclouddeckservice.h"
@@ -67,6 +71,164 @@ namespace {
 constexpr int kMarkdownLspDiagnosticProperty = QTextFormat::UserProperty + 1;
 constexpr int kFoldIndicatorPadding = 4;
 QHash<QString, QSet<QString>> s_foldedHeadingStateByNoteReference;
+
+struct SetextHeadingUnderline {
+    int level = 0;
+    int leadingSpaces = 0;
+    int markerCount = 0;
+
+    bool isValid() const { return level > 0; }
+};
+
+static int markdownHeadingIndent(const QString &line) {
+    int i = 0;
+    while (i < line.size() && i < 3 && line.at(i) == QLatin1Char(' ')) {
+        ++i;
+    }
+
+    return i;
+}
+
+static int atxHeadingLevel(const QString &line, int *headingMarkerStart = nullptr,
+                           int *headingMarkerEnd = nullptr) {
+    int i = markdownHeadingIndent(line);
+    const int markerStart = i;
+    while (i < line.size() && line.at(i) == QLatin1Char('#')) {
+        ++i;
+    }
+
+    const int headingLevel = i - markerStart;
+    if (headingLevel <= 0 || headingLevel > 6) {
+        return 0;
+    }
+
+    if (i < line.size() && line.at(i) != QLatin1Char(' ') && line.at(i) != QLatin1Char('\t')) {
+        return 0;
+    }
+
+    if (headingMarkerStart) {
+        *headingMarkerStart = markerStart;
+    }
+
+    if (headingMarkerEnd) {
+        *headingMarkerEnd = i;
+    }
+
+    return headingLevel;
+}
+
+static SetextHeadingUnderline parseSetextHeadingUnderline(const QString &line) {
+    SetextHeadingUnderline underline;
+
+    int i = markdownHeadingIndent(line);
+    underline.leadingSpaces = i;
+
+    if (i >= line.size()) {
+        return underline;
+    }
+
+    const QChar marker = line.at(i);
+    if (marker != QLatin1Char('=') && marker != QLatin1Char('-')) {
+        return underline;
+    }
+
+    const int markerStart = i;
+    while (i < line.size() && line.at(i) == marker) {
+        ++i;
+    }
+
+    underline.markerCount = i - markerStart;
+
+    while (i < line.size() && (line.at(i) == QLatin1Char(' ') || line.at(i) == QLatin1Char('\t'))) {
+        ++i;
+    }
+
+    if (i != line.size()) {
+        return {};
+    }
+
+    underline.level = (marker == QLatin1Char('=')) ? 1 : 2;
+    return underline;
+}
+
+static int boundedHeadingLevel(const int headingLevel, const int levelDelta) {
+#if __cplusplus >= 201703L
+    return std::clamp(headingLevel + levelDelta, 1, 6);
+#else
+    return qBound(1, headingLevel + levelDelta, 6);
+#endif
+}
+
+QString changeHeadingDepth(const QString &text, const int levelDelta) {
+    QString normalizedText = text;
+    normalizedText.replace(QChar(0x2029), QLatin1Char('\n'));
+
+    QStringList lines = normalizedText.split(QLatin1Char('\n'),
+#if QT_VERSION < QT_VERSION_CHECK(5, 15, 0)
+                                             QString::KeepEmptyParts
+#else
+                                             Qt::KeepEmptyParts
+#endif
+    );
+    QStringList updatedLines;
+    updatedLines.reserve(lines.size());
+
+    for (int lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+        const QString &line = lines.at(lineIndex);
+
+        int headingMarkerStart = 0;
+        int headingMarkerEnd = 0;
+        const int atxLevel = atxHeadingLevel(line, &headingMarkerStart, &headingMarkerEnd);
+        if (atxLevel > 0) {
+            const int newHeadingLevel = boundedHeadingLevel(atxLevel, levelDelta);
+            if (newHeadingLevel == atxLevel) {
+                updatedLines.append(line);
+                continue;
+            }
+
+            updatedLines.append(line.left(headingMarkerStart) +
+                                QString(newHeadingLevel, QLatin1Char('#')) +
+                                line.mid(headingMarkerEnd));
+            continue;
+        }
+
+        if (lineIndex + 1 < lines.size()) {
+            const SetextHeadingUnderline underline =
+                parseSetextHeadingUnderline(lines.at(lineIndex + 1));
+            const int titleIndent = markdownHeadingIndent(line);
+            const QString titleText = line.mid(titleIndent).trimmed();
+
+            if (underline.isValid() && !titleText.isEmpty()) {
+                const int newHeadingLevel = boundedHeadingLevel(underline.level, levelDelta);
+                if (newHeadingLevel <= 2) {
+                    updatedLines.append(line);
+
+                    if (newHeadingLevel == underline.level) {
+                        updatedLines.append(lines.at(lineIndex + 1));
+                    } else {
+                        const int underlineWidth = std::max(
+                            underline.markerCount, std::max(static_cast<int>(titleText.size()), 3));
+                        const QChar marker =
+                            (newHeadingLevel == 1) ? QLatin1Char('=') : QLatin1Char('-');
+                        updatedLines.append(QString(underline.leadingSpaces, QLatin1Char(' ')) +
+                                            QString(underlineWidth, marker));
+                    }
+                } else {
+                    updatedLines.append(line.left(titleIndent) +
+                                        QString(newHeadingLevel, QLatin1Char('#')) +
+                                        QStringLiteral(" ") + titleText);
+                }
+
+                ++lineIndex;
+                continue;
+            }
+        }
+
+        updatedLines.append(line);
+    }
+
+    return updatedLines.join(QLatin1Char('\n'));
+}
 
 struct InnerSelectionCandidate {
     int innerStart = -1;
@@ -377,6 +539,27 @@ QOwnNotesMarkdownTextEdit::QOwnNotesMarkdownTextEdit(QWidget *parent)
 
 #ifdef LANGUAGETOOL_ENABLED
     connect(LanguageToolChecker::instance(), &LanguageToolChecker::blockMatchesUpdated, this,
+            [this](const QVector<int> &blockNumbers) {
+                if (!document() || !highlighter()) {
+                    return;
+                }
+
+                if (blockNumbers.isEmpty()) {
+                    highlighter()->rehighlight();
+                    return;
+                }
+
+                for (const int blockNumber : blockNumbers) {
+                    const QTextBlock block = document()->findBlockByNumber(blockNumber);
+                    if (block.isValid()) {
+                        highlighter()->rehighlightBlock(block);
+                    }
+                }
+            });
+#endif
+
+#ifdef HARPER_ENABLED
+    connect(HarperChecker::instance(), &HarperChecker::blockMatchesUpdated, this,
             [this](const QVector<int> &blockNumbers) {
                 if (!document() || !highlighter()) {
                     return;
@@ -1322,6 +1505,15 @@ bool QOwnNotesMarkdownTextEdit::replaceFullLineSelection(const QString &text) {
     return true;
 }
 
+bool QOwnNotesMarkdownTextEdit::changeHeadingDepthOfSelection(const int levelDelta) {
+    QTextCursor cursor = fullLineSelectionCursor();
+    if (!cursor.hasSelection()) {
+        return false;
+    }
+
+    return replaceFullLineSelection(changeHeadingDepth(cursor.selectedText(), levelDelta));
+}
+
 QMargins QOwnNotesMarkdownTextEdit::viewportMargins() {
     return QMarkdownTextEdit::viewportMargins();
 }
@@ -2186,6 +2378,19 @@ void QOwnNotesMarkdownTextEdit::updateSettings() {
     }
 #endif
 
+#ifdef HARPER_ENABLED
+    auto *harperChecker = HarperChecker::instance();
+    if (harperChecker) {
+        if ((objectName() == QStringLiteral("noteTextEdit")) ||
+            (objectName() == QStringLiteral("encryptedNoteTextEdit")) || objectName().isEmpty()) {
+            harperChecker->setTextEdit(this);
+            harperChecker->scheduleCheck(true);
+        } else {
+            harperChecker->clearForTextEdit(this);
+        }
+    }
+#endif
+
     // highlighting is always disabled for logTextEdit
     if (objectName() != QStringLiteral("logTextEdit")) {
         // enable or disable Markdown highlighting
@@ -2272,48 +2477,19 @@ void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
         QMenu *listOperationsMenu = menu->addMenu(tr("List operations"));
         listOperationsMenu->setEnabled(isAllowNoteEditing);
 
-        QAction *toggleCheckboxesAction = listOperationsMenu->addAction(tr("Toggle checkbox(es)"));
-        connect(toggleCheckboxesAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::toggleCheckboxes(fullLineSelectionCursor().selectedText()));
-        });
+        listOperationsMenu->addAction(MainWindow::instance()->toggleCheckboxesAction());
+        listOperationsMenu->addAction(MainWindow::instance()->createOrderedListAction());
+        listOperationsMenu->addAction(MainWindow::instance()->createAlphabeticalListAction());
+        listOperationsMenu->addAction(MainWindow::instance()->createUnorderedListAction());
+        listOperationsMenu->addAction(MainWindow::instance()->createCheckboxListAction());
+        listOperationsMenu->addAction(MainWindow::instance()->clearListFormattingAction());
+        listOperationsMenu->addAction(MainWindow::instance()->orderCheckboxesAction());
 
-        QAction *orderedListAction = listOperationsMenu->addAction(tr("1. 2. 3. list"));
-        connect(orderedListAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::createOrderedList(fullLineSelectionCursor().selectedText()));
-        });
+        QMenu *markdownOperationsMenu = menu->addMenu(tr("Markdown operations"));
+        markdownOperationsMenu->setEnabled(isAllowNoteEditing);
 
-        QAction *alphabeticalListAction = listOperationsMenu->addAction(tr("a. b. c. list"));
-        connect(alphabeticalListAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::createAlphabeticalList(fullLineSelectionCursor().selectedText()));
-        });
-
-        QAction *unorderedListAction = listOperationsMenu->addAction(tr("- list"));
-        connect(unorderedListAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::createUnorderedList(fullLineSelectionCursor().selectedText()));
-        });
-
-        QAction *checkboxListAction = listOperationsMenu->addAction(tr("Create checkbox list"));
-        connect(checkboxListAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::createCheckboxList(fullLineSelectionCursor().selectedText()));
-        });
-
-        QAction *clearListFormattingAction =
-            listOperationsMenu->addAction(tr("Clear list formatting"));
-        connect(clearListFormattingAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::clearListFormatting(fullLineSelectionCursor().selectedText()));
-        });
-
-        QAction *orderCheckboxesAction = listOperationsMenu->addAction(tr("Order checkboxes"));
-        connect(orderCheckboxesAction, &QAction::triggered, this, [this]() {
-            replaceFullLineSelection(
-                Utils::ListUtils::orderCheckboxes(fullLineSelectionCursor().selectedText()));
-        });
+        markdownOperationsMenu->addAction(MainWindow::instance()->increaseHeadingDepthAction());
+        markdownOperationsMenu->addAction(MainWindow::instance()->decreaseHeadingDepthAction());
 
         menu->addAction(MainWindow::instance()->searchTextOnWebAction());
         menu->addAction(MainWindow::instance()->findNoteAction());
@@ -2514,6 +2690,10 @@ QMenu *QOwnNotesMarkdownTextEdit::spellCheckContextMenu(QPoint pos) {
     addLanguageToolMenuSection(menu, cursorAtMouse, cursor, hasEntries);
 #endif
 
+#ifdef HARPER_ENABLED
+    addHarperMenuSection(menu, cursorAtMouse, cursor, hasEntries);
+#endif
+
     if (!spellchecker || !spellchecker->isActive() || _isSpellCheckingDisabled) {
         if (!hasEntries) {
             delete menu;
@@ -2705,6 +2885,94 @@ void QOwnNotesMarkdownTextEdit::applyLanguageToolReplacement(const QTextCursor &
     }
 
     // Turn off read-only mode first so the note will be stored
+    if (auto *mw = MainWindow::instance()) {
+        mw->allowNoteEditing();
+    }
+
+    mutableCursor.insertText(replacement);
+    setTextCursor(mutableCursor);
+}
+#endif
+
+#ifdef HARPER_ENABLED
+void QOwnNotesMarkdownTextEdit::addHarperMenuSection(QMenu *menu, const QTextCursor &cursorAtMouse,
+                                                     const QTextCursor &selectedCursor,
+                                                     bool &hasEntries) {
+    auto *checker = HarperChecker::instance();
+    if ((checker == nullptr) || !checker->isEnabled()) {
+        return;
+    }
+
+    QTextCursor matchCursor(cursorAtMouse);
+    matchCursor.clearSelection();
+    const auto blockMatch = checker->matchAtPosition(matchCursor, matchCursor.positionInBlock());
+    if ((blockMatch.blockNumber < 0) || checker->isRuleIgnored(blockMatch.match.ruleId)) {
+        return;
+    }
+
+    if (hasEntries) {
+        menu->addSeparator();
+    }
+
+    QTextCursor replacementCursor(selectedCursor);
+    const int blockPosition = matchCursor.block().position();
+    replacementCursor.setPosition(blockPosition + blockMatch.match.offset);
+    replacementCursor.setPosition(blockPosition + blockMatch.match.offset + blockMatch.match.length,
+                                  QTextCursor::KeepAnchor);
+
+    const QString category =
+        blockMatch.match.ruleCategory.isEmpty() ? tr("Harper") : blockMatch.match.ruleCategory;
+    QString headerText = category;
+    if (!blockMatch.match.shortMessage.isEmpty()) {
+        headerText += QStringLiteral(": ") + blockMatch.match.shortMessage;
+    } else if (!blockMatch.match.message.isEmpty()) {
+        headerText += QStringLiteral(": ") + blockMatch.match.message;
+    }
+
+    QAction *headerAction = menu->addAction(headerText);
+    headerAction->setEnabled(false);
+
+    if (blockMatch.match.replacements.isEmpty()) {
+        QAction *noSuggestionsAction = menu->addAction(tr("No suggestions"));
+        noSuggestionsAction->setEnabled(false);
+    } else {
+        const QStringList replacements = blockMatch.match.replacements.mid(0, 8);
+        for (const QString &replacement : replacements) {
+            menu->addAction(replacement, this, [this, replacementCursor, replacement]() mutable {
+                applyHarperReplacement(replacementCursor, replacement);
+            });
+        }
+    }
+
+    const auto ruleId = blockMatch.match.ruleId;
+    menu->addAction(tr("Ignore this rule"), this, [this, checker, ruleId]() {
+        checker->ignoreRule(ruleId);
+        if (highlighter()) {
+            highlighter()->rehighlight();
+        }
+    });
+
+    const QString matchedWord = replacementCursor.selectedText();
+    if (!matchedWord.isEmpty()) {
+        menu->addAction(tr("Ignore word \"%1\"").arg(matchedWord), this,
+                        [this, checker, matchedWord]() {
+                            checker->ignoreWord(matchedWord);
+                            if (highlighter()) {
+                                highlighter()->rehighlight();
+                            }
+                        });
+    }
+
+    hasEntries = true;
+}
+
+void QOwnNotesMarkdownTextEdit::applyHarperReplacement(const QTextCursor &cursor,
+                                                       const QString &replacement) {
+    QTextCursor mutableCursor(cursor);
+    if (mutableCursor.isNull()) {
+        return;
+    }
+
     if (auto *mw = MainWindow::instance()) {
         mw->allowNoteEditing();
     }
@@ -3072,6 +3340,9 @@ void QOwnNotesMarkdownTextEdit::focusInEvent(QFocusEvent *e) {
 #ifdef LANGUAGETOOL_ENABLED
         LanguageToolChecker::instance()->setTextEdit(this);
 #endif
+#ifdef HARPER_ENABLED
+        HarperChecker::instance()->setTextEdit(this);
+#endif
     }
 
     // Call parent implementation
@@ -3112,6 +3383,9 @@ QOwnNotesMarkdownTextEdit::~QOwnNotesMarkdownTextEdit() {
     closeMarkdownLspDocument();
 #ifdef LANGUAGETOOL_ENABLED
     LanguageToolChecker::instance()->clearForTextEdit(this);
+#endif
+#ifdef HARPER_ENABLED
+    HarperChecker::instance()->clearForTextEdit(this);
 #endif
     // Unregister if this was the active editor
     unregisterAsActiveEditor();
@@ -3165,6 +3439,8 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
             .toString();
     const QStringList arguments =
         settings.value(QStringLiteral("Editor/markdownLspArguments")).toStringList();
+    const bool verboseLogging =
+        settings.value(QStringLiteral("Editor/markdownLspVerboseLogging"), false).toBool();
 
     if (!enabled) {
         _markdownLspEnabled = false;
@@ -3199,6 +3475,7 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
     }
 
     _markdownLspClient->setServerCommand(command, arguments);
+    _markdownLspClient->setVerboseLogging(verboseLogging);
     if (_markdownLspClient->start()) {
         const QString rootPath = NoteFolder::currentLocalPath();
         _markdownLspClient->initialize(rootPath, QStringLiteral("QOwnNotes"),
@@ -3324,9 +3601,12 @@ void QOwnNotesMarkdownTextEdit::showMarkdownLspCompletions(int requestId,
 void QOwnNotesMarkdownTextEdit::showMarkdownLspDiagnostics(
     const QString &uri, const QVector<MarkdownLspClient::Diagnostic> &diagnostics) {
     if (uri != _markdownLspUri) {
+        qDebug() << "Markdown LSP: ignoring diagnostics for" << uri
+                 << "(current:" << _markdownLspUri << ")";
         return;
     }
 
+    qDebug() << "Markdown LSP: applying" << diagnostics.size() << "diagnostics for" << uri;
     _markdownLspDiagnostics = diagnostics;
     _markdownLspDiagnosticsSelections.clear();
     for (const MarkdownLspClient::Diagnostic &diagnostic : diagnostics) {

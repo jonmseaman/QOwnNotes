@@ -29,6 +29,8 @@ class QButtonGroup;
 class QCheckBox;
 class NoteFolder;
 class QSplitter;
+class QMenu;
+class SettingsService;
 
 struct CalDAVCalendarData;
 
@@ -70,6 +72,7 @@ class SettingsDialog : public MasterDialog {
         ExperimentalPage,
         AiPage,
         LanguageToolPage,
+        HarperPage,
         ColorModesPage,
         McpServerPage
     };
@@ -143,6 +146,14 @@ class SettingsDialog : public MasterDialog {
 
     void loadShortcutSettings();
 
+    void buildShortcutTreeForMenu(const QMenu *menu, QTreeWidgetItem *parentItem,
+                                  SettingsService &settings,
+                                  const QColor &shortcutButtonActiveColor,
+                                  const QColor &shortcutButtonInactiveColor,
+                                  const QIcon &disableShortcutButtonIcon,
+                                  const QIcon &clearButtonIcon,
+                                  const QStringList &disabledMenuNames);
+
     void storeShortcutSettings();
 
     QTreeWidgetItem *findSettingsTreeWidgetItemByPage(int page);
@@ -165,6 +176,7 @@ class SettingsDialog : public MasterDialog {
     void replaceOwnCloudText() const;
 
     QKeySequenceWidget *findKeySequenceWidget(const QString &objectName);
+    QKeySequenceWidget *findGlobalKeySequenceWidget(const QString &objectName);
 
     void handleDarkModeCheckBoxToggled(bool updateCheckBoxes = false, bool updateSchema = false);
 
