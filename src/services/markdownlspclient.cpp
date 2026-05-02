@@ -8,6 +8,20 @@
 #include <QRegularExpression>
 #include <QUrl>
 
+namespace {
+QString diagnosticCodeToString(const QJsonValue &value) {
+    if (value.isString()) {
+        return value.toString();
+    }
+
+    if (value.isDouble()) {
+        return QString::number(value.toInt());
+    }
+
+    return QString();
+}
+}    // namespace
+
 MarkdownLspClient::MarkdownLspClient(QObject *parent)
     : QObject(parent), _process(new QProcess(this)) {
     connect(_process, &QProcess::readyReadStandardOutput, this,
@@ -162,6 +176,52 @@ void MarkdownLspClient::didOpen(const QString &uri, const QString &languageId, c
     QJsonObject obj;
     obj.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
     obj.insert(QStringLiteral("method"), QStringLiteral("textDocument/didOpen"));
+    obj.insert(QStringLiteral("params"), params);
+    sendMessage(obj);
+}
+
+MarkdownLspClient::TextDocumentSyncKind MarkdownLspClient::serverSyncKind() const {
+    return _serverSyncKind;
+}
+
+void MarkdownLspClient::didChangeIncremental(const QString &uri,
+                                             const QVector<IncrementalChange> &changes,
+                                             int version) {
+    if (!_initialized || changes.isEmpty()) {
+        return;
+    }
+
+    QJsonObject doc;
+    doc.insert(QStringLiteral("uri"), uri);
+    doc.insert(QStringLiteral("version"), version);
+
+    QJsonArray changesArray;
+    for (const IncrementalChange &change : changes) {
+        QJsonObject start;
+        start.insert(QStringLiteral("line"), change.startLine);
+        start.insert(QStringLiteral("character"), change.startCharacter);
+
+        QJsonObject end;
+        end.insert(QStringLiteral("line"), change.endLine);
+        end.insert(QStringLiteral("character"), change.endCharacter);
+
+        QJsonObject range;
+        range.insert(QStringLiteral("start"), start);
+        range.insert(QStringLiteral("end"), end);
+
+        QJsonObject changeObj;
+        changeObj.insert(QStringLiteral("range"), range);
+        changeObj.insert(QStringLiteral("text"), change.text);
+        changesArray.append(changeObj);
+    }
+
+    QJsonObject params;
+    params.insert(QStringLiteral("textDocument"), doc);
+    params.insert(QStringLiteral("contentChanges"), changesArray);
+
+    QJsonObject obj;
+    obj.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    obj.insert(QStringLiteral("method"), QStringLiteral("textDocument/didChange"));
     obj.insert(QStringLiteral("params"), params);
     sendMessage(obj);
 }
@@ -352,6 +412,12 @@ int MarkdownLspClient::requestCodeActions(const QString &uri, const DiagnosticRa
         if (!diagnostic.message.isEmpty()) {
             diagObject.insert(QStringLiteral("message"), diagnostic.message);
         }
+        if (!diagnostic.source.isEmpty()) {
+            diagObject.insert(QStringLiteral("source"), diagnostic.source);
+        }
+        if (!diagnostic.code.isEmpty()) {
+            diagObject.insert(QStringLiteral("code"), diagnostic.code);
+        }
         diagnosticsArray.append(diagObject);
     }
 
@@ -472,7 +538,20 @@ void MarkdownLspClient::parseMessages() {
         }
 
         const QJsonObject object = doc.object();
-        if (object.contains(QStringLiteral("id"))) {
+        const bool hasId = object.contains(QStringLiteral("id"));
+        const bool hasMethod = object.contains(QStringLiteral("method"));
+
+        if (hasId && hasMethod) {
+            // Server-to-client request (e.g. client/registerCapability,
+            // window/workDoneProgress/create). Acknowledge with an empty
+            // success response so the server doesn't stall waiting for it.
+            const QJsonValue requestId = object.value(QStringLiteral("id"));
+            QJsonObject response;
+            response.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+            response.insert(QStringLiteral("id"), requestId);
+            response.insert(QStringLiteral("result"), QJsonValue());
+            sendMessage(response);
+        } else if (hasId) {
             handleResponse(object);
         } else {
             handleNotification(object);
@@ -485,6 +564,34 @@ void MarkdownLspClient::handleResponse(const QJsonObject &object) {
     if (id == _initializeRequestId) {
         _initialized = true;
         _initializeRequestId = -1;
+
+        // Extract textDocumentSync capability from the server response.
+        // The sync kind can appear as a bare integer or inside an options object.
+        _serverSyncKind = SyncFull;
+        const QJsonObject result = object.value(QStringLiteral("result")).toObject();
+        const QJsonObject capabilities = result.value(QStringLiteral("capabilities")).toObject();
+        const QJsonValue syncValue = capabilities.value(QStringLiteral("textDocumentSync"));
+        if (syncValue.isDouble()) {
+            const int kind = syncValue.toInt(1);
+            if (kind == 2) {
+                _serverSyncKind = SyncIncremental;
+            } else if (kind == 0) {
+                _serverSyncKind = SyncNone;
+            }
+        } else if (syncValue.isObject()) {
+            const QJsonObject syncObj = syncValue.toObject();
+            const int kind = syncObj.value(QStringLiteral("change")).toInt(1);
+            if (kind == 2) {
+                _serverSyncKind = SyncIncremental;
+            } else if (kind == 0) {
+                _serverSyncKind = SyncNone;
+            }
+        }
+
+        if (_verboseLogging) {
+            qDebug() << "Markdown LSP server sync kind:" << static_cast<int>(_serverSyncKind);
+        }
+
         emit serverInitialized();
         sendInitializedNotification();
         flushPendingDocument();
@@ -628,10 +735,12 @@ void MarkdownLspClient::handleNotification(const QJsonObject &object) {
         diagnostic.range.endCharacter = endObject.value(QStringLiteral("character")).toInt();
         diagnostic.severity = diagnosticObject.value(QStringLiteral("severity")).toInt();
         diagnostic.message = diagnosticObject.value(QStringLiteral("message")).toString();
+        diagnostic.source = diagnosticObject.value(QStringLiteral("source")).toString().trimmed();
+        diagnostic.code =
+            diagnosticCodeToString(diagnosticObject.value(QStringLiteral("code"))).trimmed();
         diagnostics.push_back(diagnostic);
     }
 
-    qDebug() << "Markdown LSP diagnostics received for" << uri << "- count:" << diagnostics.size();
     emit diagnosticsReceived(uri, diagnostics);
 }
 
@@ -692,14 +801,22 @@ QVector<MarkdownLspClient::TextEdit> MarkdownLspClient::parseWorkspaceEdits(
         return edits;
     }
 
+    const QString normalizedUri = QUrl::fromPercentEncoding(uri.toUtf8());
+
     const QJsonValue changesValue = workspaceEdit.value(QStringLiteral("changes"));
     if (changesValue.isObject()) {
         const QJsonObject changesObject = changesValue.toObject();
-        const QJsonValue uriEdits = changesObject.value(uri);
-        if (uriEdits.isArray()) {
-            edits = parseTextEdits(uriEdits);
-            if (!edits.isEmpty()) {
-                return edits;
+        for (auto it = changesObject.constBegin(); it != changesObject.constEnd(); ++it) {
+            const QString changeUri = it.key();
+            if (QUrl::fromPercentEncoding(changeUri.toUtf8()) != normalizedUri) {
+                continue;
+            }
+
+            if (it.value().isArray()) {
+                edits = parseTextEdits(it.value());
+                if (!edits.isEmpty()) {
+                    return edits;
+                }
             }
         }
     }
@@ -716,7 +833,7 @@ QVector<MarkdownLspClient::TextEdit> MarkdownLspClient::parseWorkspaceEdits(
             const QJsonObject textDocument =
                 docChange.value(QStringLiteral("textDocument")).toObject();
             const QString changeUri = textDocument.value(QStringLiteral("uri")).toString();
-            if (changeUri != uri) {
+            if (QUrl::fromPercentEncoding(changeUri.toUtf8()) != normalizedUri) {
                 continue;
             }
 

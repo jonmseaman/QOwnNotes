@@ -1,5 +1,150 @@
 # QOwnNotes Changelog
 
+## 26.5.2
+
+- Added a new **Edit table** context menu item to the note text editor that opens a visual
+  table editor dialog when right-clicking inside a Markdown table
+  (for [#3593](https://github.com/pbek/QOwnNotes/issues/3593))
+  - The dialog shows the table data in an editable grid
+  - Clicking a column header selects that column and updates the alignment combobox
+    to reflect its current alignment, making it easy to see and change alignment
+  - Supports adding and removing rows (via dedicated **Row** buttons) and columns
+    (via dedicated **Column** buttons)
+  - Allows changing the alignment of the selected column(s) (default/left, left,
+    center, right) via the alignment combobox and **Apply alignment** button
+  - Automatically formats the table when changes are applied
+
+## 26.5.1
+
+- Added a **Reload** button to the **Note Bookmarks** dialog to re-check bookmarks
+  from disk without having to close and reopen the dialog
+  (for [#3589](https://github.com/pbek/QOwnNotes/issues/3589))
+- The **Store note bookmark** sub-menu in _Note / Navigation_ is now grayed out
+  when the note editing panel does not have focus, making it clear that storing
+  a bookmark requires the editor to be active (for [#3589](https://github.com/pbek/QOwnNotes/issues/3589))
+- Fixed several security issues (for [#3591](https://github.com/pbek/QOwnNotes/issues/3591))
+  - Fixed a **plaintext password leak** where a `qDebug()` call in
+    `restoreTrashedNoteOnServer()` logged a `QUrl` containing the embedded
+    server password
+  - Changed the default value of the **Ignore SSL errors** network setting from
+    `true` to `false` to prevent man-in-the-middle attacks on fresh installs
+  - The **MCP server** CORS header was narrowed from the wildcard `*` to
+    `http://localhost` to reduce the DNS-rebinding / localhost attack surface
+  - The Linux dark-mode D-Bus check now invokes `dbus-send` directly instead of
+    via `/bin/sh -c`, eliminating unnecessary shell interpretation
+  - URLs typed without a scheme now default to `https://` instead of `http://`
+  - A table-name whitelist was added to `generateDatabaseTableSha1Signature()`
+    to guard against SQL injection via concatenated table names
+  - The FakeVim shell-filter (`!`) on Qt < 5.15 no longer passes the full
+    command string to `QProcess::start()` (which invoked the shell); the
+    executable is now split out and run directly in all Qt versions
+  - The macOS updater temporary script file now has owner-only permissions
+    (`0700`) set _before_ its content is written, hardening against
+    TOCTOU replacement by other local users
+- Fixed IME candidate window overlapping text when typing with a Japanese (or
+  other CJK) IME on Windows by overriding `inputMethodQuery()` in
+  `QOwnNotesMarkdownTextEdit` to offset the reported cursor rectangle by the
+  current viewport margins (for [#3590](https://github.com/pbek/QOwnNotes/issues/3590))
+
+## 26.5.0
+
+- Added **Note Bookmarks** sub-menus to the _Note / Navigation_ menu
+  (for [#3589](https://github.com/pbek/QOwnNotes/issues/3589))
+  - New **Store note bookmark** sub-menu with slots 1–9 (`Ctrl+Shift+1`–`Ctrl+Shift+9`)
+  - New **Go to note bookmark** sub-menu with slots 1–9 (`Ctrl+1`–`Ctrl+9`)
+  - All bookmark shortcuts are now proper `QAction`s in the menu and can be
+    customized in the _Shortcut settings_, superseding the old hardcoded
+    `QShortcut`-based approach
+- Added a new **Note bookmarks** entry in the _Note / Navigation_ menu that opens
+  a non-modal **Note Bookmarks** dialog listing all currently stored bookmarks with
+  the ability to jump to a bookmark or delete it (for [#3589](https://github.com/pbek/QOwnNotes/issues/3589))
+- Fixed a bug where searching for a multi-word text like "Heading 1" in the
+  **Note search panel** would not correctly use all terms in the in-note regexp
+  search, because the search mode was set after the search text causing
+  `performSearch()` to fire with the old mode; the search mode is now set
+  before the search text in `doSearch()` (for [#3588](https://github.com/pbek/QOwnNotes/issues/3588))
+- Fixed a bug where the in-note search widget's text was overwritten by the
+  currently selected match word when the search was activated programmatically
+  from the note search panel, causing only one term (e.g. "Heading" instead of
+  "(Heading|1)") to be searched; the preset-from-selection logic in `activate()`
+  now only applies when the user manually opens the search widget
+  (for [#3588](https://github.com/pbek/QOwnNotes/issues/3588))
+- Added the ability to delete one or multiple cards in the **Nextcloud Deck dialog**
+  using the `Del` key or via a new **Delete X card(s)** context menu item;
+  a confirmation dialog is shown in all cases (for [#3357](https://github.com/pbek/QOwnNotes/issues/3357))
+- A PPA for Ubuntu 26.10 (Stonking Stingray) was added
+  - See [Install on Ubuntu](https://www.qownnotes.org/installation/ubuntu.html)
+    for more information on how to install the PPA
+
+## 26.4.25
+
+- Updated **Toggle checkbox(es)** in the **note text edit** context menu so it now
+  only toggles existing checkbox list items and no longer turns plain selected lines
+  or regular list items into checkbox list items (for [#3524](https://github.com/pbek/QOwnNotes/issues/3524))
+- Major performance improvement for the Markdown LSP integration on large notes
+  (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+  - Added a new `MarkdownLspDocumentTracker` class that uses Qt's
+    `QTextDocument::contentsChange` signal to track edits incrementally instead
+    of calling `toPlainText()` on every keystroke; the per-keystroke cost drops
+    from O(n) (full-document copy) to O(log n + delta)
+  - The client now reads the server's `textDocumentSync` capability from the
+    initialize response and sends **incremental** `didChange` payloads
+    (`TextDocumentSyncKind=2`) when the server supports it (e.g. `marksman`),
+    falling back to full-text sync for servers like `rumdl`
+  - Optimized the LSP diagnostic wave-underline painter in the highlighter to
+    batch contiguous characters with the same base format into single
+    `setFormat()` calls, reducing format-range fragmentation from O(characters)
+    to O(format-runs)
+  - When the Markdown LSP feature is disabled, **zero additional work** is
+    performed on the text-change hot path — no `toPlainText()`, no timer
+    restarts, no signal connections fire
+- Added a global **Ignore rule** action to the inline Markdown LSP diagnostic
+  context menu and a **Reset ignored rules** button on the **Markdown LSP**
+  settings page, so Markdown LSP rules can be suppressed across all notes and
+  later restored from one place (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+
+## 26.4.24
+
+- Fixed a URI percent-encoding mismatch that prevented Markdown LSP diagnostics
+  from being applied when a note filename contains spaces; the incoming LSP URI
+  (e.g. `Top%20heading.md`) is now decoded with `QUrl::fromPercentEncoding`
+  before being compared to the stored document URI so wave-underlines appear
+  correctly for notes with spaces in their name (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Added an inline **Markdown LSP diagnostic context menu** section that appears
+  when right-clicking on a wave-underlined region in the note editor; it shows
+  the diagnostic message as a header and fetches available LSP code actions
+  (fixes) via a short synchronous wait, then lists each fix as a clickable menu
+  item — matching the same UX pattern used by the LanguageTool and Harper
+  context menus; the old standalone **Code actions** menu item in the
+  **Markdown LSP** submenu has been removed in favour of this inline approach
+  (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Fixed a protocol bug where the Markdown LSP client did not respond to
+  server-initiated requests (e.g. `client/registerCapability`), causing the
+  LSP server to stall after the initial `didOpen`; subsequent `didChange`
+  notifications were silently ignored by the server so diagnostics never
+  refreshed after the first note load (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Fixed stale Markdown LSP wave underlines remaining visible after applying
+  a quick-fix or manually editing the text to resolve a diagnostic; when fresh
+  diagnostics arrive from the server, blocks that previously had diagnostics
+  are now also rehighlighted so their old underlines are cleared
+  (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Moved the Markdown LSP configuration out of the **Editor** settings into its
+  own **Markdown LSP** settings page to make the language-server options easier
+  to find and manage (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Added **Auto-detect** and **Test Connection** actions to the **Markdown LSP**
+  settings page so QOwnNotes can discover supported servers such as `marksman`
+  and `rumdl`, prefill the correct command-line arguments, and verify that the
+  configured LSP server completes its initialization handshake
+  (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Fixed switching the configured Markdown LSP service in the settings so the
+  editor now restarts the running LSP client and reconnects the current note
+  immediately instead of continuing to talk to the previously selected server
+  until the application is restarted (for [#3467](https://github.com/pbek/QOwnNotes/issues/3467))
+- Fixed the **AI toolbar disabled** confirmation so choosing **Don't ask again!**
+  together with **No** now actually suppresses the dialog on later runs instead
+  of prompting again every time an AI backend is configured while the toolbar
+  stays hidden (for [#3561](https://github.com/pbek/QOwnNotes/issues/3561))
+
 ## 26.4.23
 
 - Fixed shortcuts not being saved or restored in the **Shortcuts** settings;

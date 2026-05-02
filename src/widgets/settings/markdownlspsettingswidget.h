@@ -14,34 +14,35 @@
 
 #pragma once
 
+#include <QString>
+#include <QStringList>
 #include <QWidget>
 
 namespace Ui {
-class EditorSettingsWidget;
+class MarkdownLspSettingsWidget;
 }
 
-class EditorSettingsWidget : public QWidget {
+class MarkdownLspSettingsWidget : public QWidget {
     Q_OBJECT
 
    public:
-    explicit EditorSettingsWidget(QWidget *parent = nullptr);
-    ~EditorSettingsWidget();
+    explicit MarkdownLspSettingsWidget(QWidget *parent = nullptr);
+    ~MarkdownLspSettingsWidget();
 
     void initialize();
     void readSettings();
     void storeSettings();
 
-   signals:
-    void needRestart();
-    void wikiLinkSupportToggled(bool checked);
-
    private slots:
-    void on_cursorWidthResetButton_clicked();
-    void on_markdownHighlightingCheckBox_toggled(bool checked);
-    void on_enableWikiLinkSupportCheckBox_toggled(bool checked);
-    void on_showLineNumbersInEditorCheckBox_toggled(bool checked);
-    void on_editorWidthInDFMOnlyCheckBox_toggled(bool checked);
+    void on_markdownLspEnabledCheckBox_toggled(bool checked);
+    void on_markdownLspAutoDetectButton_clicked();
+    void on_markdownLspResetIgnoredRulesButton_clicked();
+    void on_markdownLspTestConnectionButton_clicked();
 
    private:
-    Ui::EditorSettingsWidget *ui;
+    Ui::MarkdownLspSettingsWidget *ui;
+
+    QStringList argumentsFromUi() const;
+    void updateStatusLabel(const QString &overrideText = QString());
+    static QString resolveCommandPath(const QString &command);
 };

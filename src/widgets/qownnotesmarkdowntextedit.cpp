@@ -14,6 +14,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEvent>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
@@ -49,6 +50,7 @@
 #include <algorithm>
 
 #include "entities/notefolder.h"
+#include "helpers/qownnotesmarkdownhighlighter.h"
 #include "helpers/qownspellchecker.h"
 #include "libraries/qmarkdowntextedit/linenumberarea.h"
 #include "mainwindow.h"
@@ -58,7 +60,10 @@
 #ifdef HARPER_ENABLED
 #include "services/harperchecker.h"
 #endif
+#include "dialogs/markdowntabledialog.h"
 #include "services/markdownlspclient.h"
+#include "services/markdownlspdocumenttracker.h"
+#include "services/markdownlspignoredrules.h"
 #include "services/nextclouddeckservice.h"
 #include "services/openaiservice.h"
 #include "services/owncloudservice.h"
@@ -68,7 +73,6 @@
 #include "version.h"
 
 namespace {
-constexpr int kMarkdownLspDiagnosticProperty = QTextFormat::UserProperty + 1;
 constexpr int kFoldIndicatorPadding = 4;
 QHash<QString, QSet<QString>> s_foldedHeadingStateByNoteReference;
 
@@ -429,6 +433,8 @@ QOwnNotesMarkdownTextEdit::QOwnNotesMarkdownTextEdit(QWidget *parent)
         connect(_highlighter, &QOwnNotesMarkdownHighlighter::highlightingFinished, this,
                 &QOwnNotesMarkdownTextEdit::scheduleRestoreCurrentFoldedHeadingState);
 
+        _markdownLspTracker = new MarkdownLspDocumentTracker(this);
+
         setStyles();
         updateSettings();
     }
@@ -493,10 +499,6 @@ QOwnNotesMarkdownTextEdit::QOwnNotesMarkdownTextEdit(QWidget *parent)
             clearAiAutocompleteSuggestion();
             _aiAutocompleteTimer->start();
         }
-
-        if (_markdownLspEnabled && !_markdownLspApplyingEdits) {
-            scheduleMarkdownLspChange();
-        }
     });
 
     SettingsService settings;
@@ -536,6 +538,9 @@ QOwnNotesMarkdownTextEdit::QOwnNotesMarkdownTextEdit(QWidget *parent)
 
     connect(MainWindow::instance(), &MainWindow::settingsChanged, this,
             &QOwnNotesMarkdownTextEdit::updateSettings);
+
+    connect(MarkdownLspIgnoredRules::instance(), &MarkdownLspIgnoredRules::ignoredRulesChanged,
+            this, &QOwnNotesMarkdownTextEdit::refreshMarkdownLspDiagnostics);
 
 #ifdef LANGUAGETOOL_ENABLED
     connect(LanguageToolChecker::instance(), &LanguageToolChecker::blockMatchesUpdated, this,
@@ -2445,9 +2450,14 @@ void QOwnNotesMarkdownTextEdit::updateSettings() {
 
 void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
     auto *spellCheckMenu = spellCheckContextMenu(pos);
+    const QTextCursor cursorAtMouse = cursorForPosition(pos);
+    auto *lspMenu = markdownLspContextMenu(cursorAtMouse);
 
     const QPoint globalPos = this->viewport()->mapToGlobal(pos);
     QMenu *menu = this->createStandardContextMenu();
+    if (lspMenu) {
+        menu->insertMenu(menu->actions().constFirst(), lspMenu);
+    }
     if (spellCheckMenu) {
         // insert spell check at the top if available
         menu->insertMenu(menu->actions().constFirst(), spellCheckMenu);
@@ -2538,11 +2548,6 @@ void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
         connect(formatSelectionAction, &QAction::triggered, this,
                 [this]() { requestMarkdownLspFormatting(true); });
 
-        QAction *codeActionsAction = lspMenu->addAction(tr("Code actions"));
-        codeActionsAction->setEnabled(isAllowNoteEditing && !_markdownLspDiagnostics.isEmpty());
-        connect(codeActionsAction, &QAction::triggered, this,
-                [this]() { requestMarkdownLspCodeActions(textCursor()); });
-
         menu->addSeparator();
     }
 
@@ -2567,6 +2572,14 @@ void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
         addRowBelowAction->setEnabled(isAllowNoteEditing);
         connect(addRowBelowAction, &QAction::triggered, this,
                 [this]() { Utils::Gui::insertTableRowBelow(this); });
+
+        QAction *editTableAction = menu->addAction(tr("Edit table"));
+        editTableAction->setEnabled(isAllowNoteEditing);
+        connect(editTableAction, &QAction::triggered, this, [this]() {
+            auto *dialog = new MarkdownTableDialog(this, this);
+            dialog->exec();
+            delete dialog;
+        });
 
         menu->addSeparator();
     }
@@ -2798,6 +2811,91 @@ QMenu *QOwnNotesMarkdownTextEdit::spellCheckContextMenu(QPoint pos) {
     menu->setTitle(tr("Spelling"));
 
     return menu;
+}
+
+QMenu *QOwnNotesMarkdownTextEdit::markdownLspContextMenu(const QTextCursor &cursorAtMouse) {
+    if (!_markdownLspEnabled || !_markdownLspClient || _markdownLspDiagnostics.isEmpty()) {
+        return nullptr;
+    }
+
+    // Find a diagnostic whose range covers the cursor position
+    const int cursorLine = cursorAtMouse.blockNumber();
+    const int cursorCol = cursorAtMouse.positionInBlock();
+    const MarkdownLspClient::Diagnostic *match = nullptr;
+    for (const auto &diag : qAsConst(_markdownLspDiagnostics)) {
+        if (cursorLine >= diag.range.startLine && cursorLine <= diag.range.endLine) {
+            // For single-line diagnostics also check column range
+            if (diag.range.startLine == diag.range.endLine) {
+                if (cursorCol >= diag.range.startCharacter &&
+                    cursorCol <= diag.range.endCharacter) {
+                    match = &diag;
+                    break;
+                }
+            } else {
+                match = &diag;
+                break;
+            }
+        }
+    }
+
+    if (!match) {
+        return nullptr;
+    }
+
+    auto *lspMenu = new QMenu(match->message, this);
+    auto *ignoredRules = MarkdownLspIgnoredRules::instance();
+
+    // Request code actions for this diagnostic and wait briefly for the response
+    // using a local event loop (same pattern as QDialog::exec)
+    _markdownLspCodeActionRequestId =
+        _markdownLspClient->requestCodeActions(_markdownLspUri, match->range, {*match});
+
+    if (_markdownLspCodeActionRequestId >= 0) {
+        QVector<MarkdownLspClient::CodeAction> receivedActions;
+        int receivedId = -1;
+
+        // Wait up to 2 seconds for the response
+        QEventLoop loop;
+        QTimer timeout;
+        timeout.setSingleShot(true);
+        timeout.setInterval(2000);
+        connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+        connect(_markdownLspClient, &MarkdownLspClient::codeActionsReceived, &loop,
+                [&](int id, const QVector<MarkdownLspClient::CodeAction> &actions) {
+                    receivedId = id;
+                    receivedActions = actions;
+                    loop.quit();
+                });
+        timeout.start();
+        loop.exec();
+
+        if (receivedId == _markdownLspCodeActionRequestId) {
+            _markdownLspCodeActionRequestId = -1;
+            for (const auto &action : qAsConst(receivedActions)) {
+                lspMenu->addAction(action.title, this, [this, action]() {
+                    if (action.hasEdits()) {
+                        applyMarkdownLspTextEdits(action.edits);
+                    } else if (action.hasCommand()) {
+                        _markdownLspClient->executeCommand(action.command);
+                    }
+                });
+            }
+        }
+    }
+
+    const QString ruleId = match->ruleId();
+    if (!ruleId.isEmpty() && ignoredRules && !ignoredRules->isRuleIgnored(ruleId)) {
+        const QString displayRuleName = match->displayRuleName();
+        const QString actionText = displayRuleName.isEmpty()
+                                       ? tr("Ignore this rule globally")
+                                       : tr("Ignore rule %1 globally").arg(displayRuleName);
+        lspMenu->addAction(actionText, this, [this, ignoredRules, ruleId]() {
+            ignoredRules->ignoreRule(ruleId);
+            refreshMarkdownLspDiagnostics();
+        });
+    }
+
+    return lspMenu;
 }
 
 #ifdef LANGUAGETOOL_ENABLED
@@ -3350,6 +3448,30 @@ void QOwnNotesMarkdownTextEdit::focusInEvent(QFocusEvent *e) {
 }
 
 /**
+ * Override inputMethodQuery to fix IME candidate window position on Windows.
+ * When viewport margins are set (e.g. for paper margins), the cursor rectangle
+ * returned to the IME must be offset by the top/left margin so that the
+ * candidate window appears adjacent to the cursor rather than overlapping it.
+ */
+QVariant QOwnNotesMarkdownTextEdit::inputMethodQuery(Qt::InputMethodQuery property) const {
+    QVariant result = QPlainTextEdit::inputMethodQuery(property);
+
+    const bool isCursorQuery =
+        (property == Qt::ImCursorRectangle || property == Qt::ImAnchorRectangle);
+    if (isCursorQuery) {
+        // viewportMargins() is non-const in this class, so cast away const to call it
+        const QMargins vm = const_cast<QOwnNotesMarkdownTextEdit *>(this)->viewportMargins();
+        if (vm.top() != 0 || vm.left() != 0) {
+            if (result.userType() == QMetaType::QRectF) {
+                result = result.toRectF().translated(qreal(vm.left()), qreal(vm.top()));
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
  * Register this editor as the active one for AI autocomplete
  */
 void QOwnNotesMarkdownTextEdit::registerAsActiveEditor() {
@@ -3393,7 +3515,7 @@ QOwnNotesMarkdownTextEdit::~QOwnNotesMarkdownTextEdit() {
 
 void QOwnNotesMarkdownTextEdit::setMarkdownLspDocumentPath(const QString &filePath,
                                                            const QString &text) {
-    if (!_markdownLspEnabled) {
+    if (!_markdownLspEnabled || !_markdownLspTracker) {
         return;
     }
 
@@ -3406,28 +3528,32 @@ void QOwnNotesMarkdownTextEdit::setMarkdownLspDocumentPath(const QString &filePa
         return;
     }
 
-    if (_markdownLspClient && !_markdownLspUri.isEmpty()) {
-        _markdownLspClient->didClose(_markdownLspUri);
+    // Close previous document via the tracker
+    if (_markdownLspTracker->isOpen()) {
+        _markdownLspTracker->close();
     }
 
     _markdownLspUri = uri;
     _markdownLspVersion = 1;
 
     if (_markdownLspClient) {
-        _markdownLspClient->didOpen(_markdownLspUri, QStringLiteral("markdown"), text,
-                                    _markdownLspVersion);
+        _markdownLspTracker->open(_markdownLspUri, text);
     }
 }
 
 void QOwnNotesMarkdownTextEdit::closeMarkdownLspDocument() {
-    if (_markdownLspClient && !_markdownLspUri.isEmpty()) {
-        _markdownLspClient->didClose(_markdownLspUri);
+    if (_markdownLspTracker && _markdownLspTracker->isOpen()) {
+        _markdownLspTracker->close();
     }
 
     _markdownLspUri.clear();
     _markdownLspVersion = 0;
-    _markdownLspDiagnosticsSelections.clear();
-    applyMarkdownLspDiagnosticsSelections();
+    _markdownLspAllDiagnostics.clear();
+    _markdownLspDiagnostics.clear();
+
+    if (auto *h = dynamic_cast<QOwnNotesMarkdownHighlighter *>(highlighter())) {
+        h->clearMarkdownLspDiagnostics();
+    }
 }
 
 void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
@@ -3441,9 +3567,13 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
         settings.value(QStringLiteral("Editor/markdownLspArguments")).toStringList();
     const bool verboseLogging =
         settings.value(QStringLiteral("Editor/markdownLspVerboseLogging"), false).toBool();
+    const bool serverConfigurationChanged =
+        (_markdownLspCommand != command) || (_markdownLspArguments != arguments);
 
     if (!enabled) {
         _markdownLspEnabled = false;
+        _markdownLspCommand = command;
+        _markdownLspArguments = arguments;
         if (_markdownLspClient) {
             closeMarkdownLspDocument();
             _markdownLspClient->shutdown();
@@ -3457,8 +3587,6 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
                 &QOwnNotesMarkdownTextEdit::showMarkdownLspCompletions);
         connect(_markdownLspClient, &MarkdownLspClient::formattingReceived, this,
                 &QOwnNotesMarkdownTextEdit::applyMarkdownLspFormatting);
-        connect(_markdownLspClient, &MarkdownLspClient::codeActionsReceived, this,
-                &QOwnNotesMarkdownTextEdit::showMarkdownLspCodeActions);
         connect(_markdownLspClient, &MarkdownLspClient::diagnosticsReceived, this,
                 &QOwnNotesMarkdownTextEdit::showMarkdownLspDiagnostics);
         connect(_markdownLspClient, &MarkdownLspClient::errorMessage, this,
@@ -3467,16 +3595,49 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
                         qWarning() << "Markdown LSP:" << message.trimmed();
                     }
                 });
-        connect(_markdownLspClient, &MarkdownLspClient::serverInitialized, this, []() {
+        connect(_markdownLspClient, &MarkdownLspClient::serverInitialized, this, [this]() {
             if (auto *mw = MainWindow::instance()) {
                 mw->showStatusBarMessage(tr("Markdown LSP server connected"), 3000);
             }
+
+            // Configure the tracker's sync kind based on the server's capability
+            if (_markdownLspTracker && _markdownLspClient) {
+                const auto kind = _markdownLspClient->serverSyncKind();
+                if (kind == MarkdownLspClient::SyncIncremental) {
+                    _markdownLspTracker->setSyncKind(MarkdownLspDocumentTracker::SyncIncremental);
+                } else {
+                    _markdownLspTracker->setSyncKind(MarkdownLspDocumentTracker::SyncFull);
+                }
+            }
         });
+
+        // Wire the tracker to the client and document
+        if (_markdownLspTracker) {
+            _markdownLspTracker->setClient(_markdownLspClient);
+            _markdownLspTracker->setDocument(document());
+        }
     }
 
+    QString reopenUri;
+    QString reopenText;
+    const bool restartClient = serverConfigurationChanged && _markdownLspClient->isRunning();
+    if (restartClient) {
+        reopenUri = _markdownLspUri;
+        reopenText = toPlainText();
+        closeMarkdownLspDocument();
+        _markdownLspClient->shutdown();
+    }
+
+    _markdownLspCommand = command;
+    _markdownLspArguments = arguments;
     _markdownLspClient->setServerCommand(command, arguments);
     _markdownLspClient->setVerboseLogging(verboseLogging);
-    if (_markdownLspClient->start()) {
+    const bool needsStart = !_markdownLspClient->isRunning();
+    if (needsStart) {
+        if (!_markdownLspClient->start()) {
+            return;
+        }
+
         const QString rootPath = NoteFolder::currentLocalPath();
         _markdownLspClient->initialize(rootPath, QStringLiteral("QOwnNotes"),
                                        QStringLiteral(VERSION));
@@ -3484,10 +3645,16 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
 
     _markdownLspEnabled = true;
 
-    if (!_markdownLspUri.isEmpty()) {
+    if (!reopenUri.isEmpty()) {
+        _markdownLspUri = reopenUri;
         _markdownLspVersion = 1;
-        _markdownLspClient->didOpen(_markdownLspUri, QStringLiteral("markdown"), toPlainText(),
-                                    _markdownLspVersion);
+        _markdownLspTracker->open(_markdownLspUri, reopenText);
+        return;
+    }
+
+    if (needsStart && !_markdownLspUri.isEmpty()) {
+        _markdownLspVersion = 1;
+        _markdownLspTracker->open(_markdownLspUri, toPlainText());
     }
 }
 
@@ -3600,71 +3767,78 @@ void QOwnNotesMarkdownTextEdit::showMarkdownLspCompletions(int requestId,
 
 void QOwnNotesMarkdownTextEdit::showMarkdownLspDiagnostics(
     const QString &uri, const QVector<MarkdownLspClient::Diagnostic> &diagnostics) {
-    if (uri != _markdownLspUri) {
-        qDebug() << "Markdown LSP: ignoring diagnostics for" << uri
-                 << "(current:" << _markdownLspUri << ")";
+    // Normalize both URIs by percent-decoding before comparing, since some LSP
+    // servers (e.g. rumdl) encode spaces as %20 while we store the raw path
+    const QString normalizedUri = QUrl::fromPercentEncoding(uri.toUtf8());
+    const QString normalizedCurrentUri = QUrl::fromPercentEncoding(_markdownLspUri.toUtf8());
+    if (normalizedUri != normalizedCurrentUri) {
         return;
     }
 
-    qDebug() << "Markdown LSP: applying" << diagnostics.size() << "diagnostics for" << uri;
-    _markdownLspDiagnostics = diagnostics;
-    _markdownLspDiagnosticsSelections.clear();
-    for (const MarkdownLspClient::Diagnostic &diagnostic : diagnostics) {
-        if (diagnostic.message.isEmpty()) {
-            continue;
-        }
+    _markdownLspAllDiagnostics = diagnostics;
+    applyMarkdownLspDiagnostics(filteredMarkdownLspDiagnostics(diagnostics));
+}
 
-        const QTextBlock startBlock = document()->findBlockByNumber(diagnostic.range.startLine);
-        if (!startBlock.isValid()) {
-            continue;
-        }
-
-        const QTextBlock endBlock = document()->findBlockByNumber(diagnostic.range.endLine);
-        if (!endBlock.isValid()) {
-            continue;
-        }
-
-        const int startPosition = startBlock.position() + diagnostic.range.startCharacter;
-        const int endPosition = endBlock.position() + diagnostic.range.endCharacter;
-        if (endPosition <= startPosition) {
-            continue;
-        }
-
-        // Choose underline color based on LSP severity:
-        // 1 = Error, 2 = Warning, 3 = Information, 4 = Hint
-        QColor underlineColor;
-        switch (diagnostic.severity) {
-            case 1:
-                underlineColor = QColor(214, 68, 68);    // Red for errors
-                break;
-            case 2:
-                underlineColor = QColor(210, 140, 30);    // Orange for warnings
-                break;
-            case 3:
-                underlineColor = QColor(80, 140, 210);    // Blue for information
-                break;
-            case 4:
-                underlineColor = QColor(100, 170, 100);    // Green for hints
-                break;
-            default:
-                underlineColor = QColor(214, 68, 68);    // Default to red
-                break;
-        }
-
-        QTextCursor cursor(document());
-        cursor.setPosition(startPosition);
-        cursor.setPosition(endPosition, QTextCursor::KeepAnchor);
-
-        QTextEdit::ExtraSelection selection;
-        selection.cursor = cursor;
-        selection.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
-        selection.format.setUnderlineColor(underlineColor);
-        selection.format.setToolTip(diagnostic.message);
-        selection.format.setProperty(kMarkdownLspDiagnosticProperty, true);
-        _markdownLspDiagnosticsSelections.append(selection);
+QVector<MarkdownLspClient::Diagnostic> QOwnNotesMarkdownTextEdit::filteredMarkdownLspDiagnostics(
+    const QVector<MarkdownLspClient::Diagnostic> &diagnostics) const {
+    auto *ignoredRules = MarkdownLspIgnoredRules::instance();
+    if (!ignoredRules) {
+        return diagnostics;
     }
 
-    applyMarkdownLspDiagnosticsSelections();
+    QVector<MarkdownLspClient::Diagnostic> filteredDiagnostics;
+    filteredDiagnostics.reserve(diagnostics.size());
+    for (const MarkdownLspClient::Diagnostic &diagnostic : diagnostics) {
+        if (ignoredRules->isRuleIgnored(diagnostic.ruleId())) {
+            continue;
+        }
+
+        filteredDiagnostics.append(diagnostic);
+    }
+
+    return filteredDiagnostics;
+}
+
+void QOwnNotesMarkdownTextEdit::applyMarkdownLspDiagnostics(
+    const QVector<MarkdownLspClient::Diagnostic> &diagnostics) {
+    auto *h = dynamic_cast<QOwnNotesMarkdownHighlighter *>(highlighter());
+    if (!h || !document()) {
+        _markdownLspDiagnostics = diagnostics;
+        return;
+    }
+
+    // Collect blocks that had old diagnostics so we can clear their underlines
+    QSet<int> dirtyLines;
+    for (const MarkdownLspClient::Diagnostic &diag : _markdownLspDiagnostics) {
+        for (int line = diag.range.startLine; line <= diag.range.endLine; ++line) {
+            dirtyLines.insert(line);
+        }
+    }
+
+    _markdownLspDiagnostics = diagnostics;
+    h->setMarkdownLspDiagnostics(diagnostics);
+
+    // Also collect blocks that have new diagnostics
+    for (const MarkdownLspClient::Diagnostic &diag : diagnostics) {
+        for (int line = diag.range.startLine; line <= diag.range.endLine; ++line) {
+            dirtyLines.insert(line);
+        }
+    }
+
+    if (dirtyLines.isEmpty()) {
+        return;
+    }
+
+    for (const int line : qAsConst(dirtyLines)) {
+        const QTextBlock block = document()->findBlockByNumber(line);
+        if (block.isValid()) {
+            h->rehighlightBlock(block);
+        }
+    }
+}
+
+void QOwnNotesMarkdownTextEdit::refreshMarkdownLspDiagnostics() {
+    applyMarkdownLspDiagnostics(filteredMarkdownLspDiagnostics(_markdownLspAllDiagnostics));
 }
 
 void QOwnNotesMarkdownTextEdit::applyMarkdownLspTextEdits(
@@ -3674,6 +3848,11 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspTextEdits(
     }
 
     _markdownLspApplyingEdits = true;
+
+    // Suppress the tracker so it doesn't record the programmatic edits
+    if (_markdownLspTracker) {
+        _markdownLspTracker->setSuppressed(true);
+    }
 
     struct ResolvedEdit {
         int start = 0;
@@ -3712,6 +3891,14 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspTextEdits(
                   return left.start > right.start;
               });
 
+    // Clear the diagnostic cache before applying edits so that the rehighlight
+    // triggered by endEditBlock() will not re-apply the old LSP underlines.
+    _markdownLspDiagnostics.clear();
+
+    if (auto *h = dynamic_cast<QOwnNotesMarkdownHighlighter *>(highlighter())) {
+        h->clearMarkdownLspDiagnostics();
+    }
+
     QTextCursor cursor(document());
     cursor.beginEditBlock();
     for (const ResolvedEdit &edit : resolved) {
@@ -3723,8 +3910,14 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspTextEdits(
 
     _markdownLspApplyingEdits = false;
 
-    if (_markdownLspEnabled && !_markdownLspApplyingEdits) {
-        scheduleMarkdownLspChange();
+    if (_markdownLspTracker) {
+        _markdownLspTracker->setSuppressed(false);
+    }
+
+    if (_markdownLspEnabled && _markdownLspTracker) {
+        // Quick-fixes invalidate the current diagnostics immediately, so refresh
+        // the LSP state right away instead of waiting for the debounce timer.
+        _markdownLspTracker->flushFullSync();
     }
 }
 
@@ -3781,133 +3974,4 @@ void QOwnNotesMarkdownTextEdit::requestMarkdownLspFormatting(bool useSelection) 
 
     _markdownLspFormattingRequestId =
         _markdownLspClient->requestDocumentFormatting(_markdownLspUri, tabSize, insertSpaces);
-}
-
-void QOwnNotesMarkdownTextEdit::requestMarkdownLspCodeActions(const QTextCursor &cursor) {
-    if (!_markdownLspEnabled || !_markdownLspClient || _markdownLspUri.isEmpty()) {
-        return;
-    }
-
-    if (_markdownLspDiagnostics.isEmpty()) {
-        return;
-    }
-
-    _markdownLspLastCodeActions.clear();
-
-    MarkdownLspClient::DiagnosticRange range;
-    if (cursor.hasSelection()) {
-        const int startPos = cursor.selectionStart();
-        const int endPos = cursor.selectionEnd();
-        const QTextBlock startBlock = document()->findBlock(startPos);
-        const QTextBlock endBlock = document()->findBlock(endPos);
-        if (!startBlock.isValid() || !endBlock.isValid()) {
-            return;
-        }
-        range.startLine = startBlock.blockNumber();
-        range.startCharacter = startPos - startBlock.position();
-        range.endLine = endBlock.blockNumber();
-        range.endCharacter = endPos - endBlock.position();
-    } else {
-        range.startLine = cursor.blockNumber();
-        range.startCharacter = cursor.positionInBlock();
-        range.endLine = range.startLine;
-        range.endCharacter = range.startCharacter;
-    }
-
-    _markdownLspCodeActionRequestId =
-        _markdownLspClient->requestCodeActions(_markdownLspUri, range, _markdownLspDiagnostics);
-}
-
-void QOwnNotesMarkdownTextEdit::showMarkdownLspCodeActions(
-    int requestId, const QVector<MarkdownLspClient::CodeAction> &actions) {
-    if (requestId != _markdownLspCodeActionRequestId || _markdownLspCodeActionRequestId == -1) {
-        return;
-    }
-
-    _markdownLspCodeActionRequestId = -1;
-
-    if (actions.isEmpty()) {
-        return;
-    }
-
-    _markdownLspLastCodeActions = actions;
-
-    QMenu menu;
-    for (int i = 0; i < actions.size(); ++i) {
-        const MarkdownLspClient::CodeAction &action = actions.at(i);
-        auto *menuAction = menu.addAction(action.title);
-        menuAction->setData(i);
-        menuAction->setWhatsThis(QStringLiteral("markdownLspCodeAction"));
-    }
-
-    if (menu.actions().isEmpty()) {
-        return;
-    }
-
-    QPoint globalPos = mapToGlobal(cursorRect().bottomRight());
-    globalPos.setY(globalPos.y() + viewportMargins().top());
-    globalPos.setX(globalPos.x() + viewportMargins().left());
-
-    QAction *selectedItem = menu.exec(globalPos);
-    if (!selectedItem) {
-        return;
-    }
-
-    const int index = selectedItem->data().toInt();
-    if (index < 0 || index >= _markdownLspLastCodeActions.size()) {
-        return;
-    }
-
-    const MarkdownLspClient::CodeAction &action = _markdownLspLastCodeActions.at(index);
-    if (action.hasEdits()) {
-        applyMarkdownLspTextEdits(action.edits);
-    } else if (action.hasCommand()) {
-        _markdownLspClient->executeCommand(action.command);
-    }
-}
-
-bool QOwnNotesMarkdownTextEdit::viewportEvent(QEvent *event) {
-    if (event->type() == QEvent::ToolTip && !_markdownLspDiagnosticsSelections.isEmpty()) {
-        auto *helpEvent = static_cast<QHelpEvent *>(event);
-        const QPoint pos = helpEvent->pos();
-        const int cursorPos = cursorForPosition(pos).position();
-
-        // Find the first diagnostic selection that covers the cursor position
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        for (const QTextEdit::ExtraSelection &selection :
-             std::as_const(_markdownLspDiagnosticsSelections)) {
-#else
-        for (const QTextEdit::ExtraSelection &selection :
-             qAsConst(_markdownLspDiagnosticsSelections)) {
-#endif
-            const int selStart = selection.cursor.selectionStart();
-            const int selEnd = selection.cursor.selectionEnd();
-            if (cursorPos >= selStart && cursorPos <= selEnd) {
-                const QString tip = selection.format.toolTip();
-                if (!tip.isEmpty()) {
-                    QToolTip::showText(helpEvent->globalPos(), tip, this);
-                    event->accept();
-                    return true;
-                }
-            }
-        }
-
-        QToolTip::hideText();
-    }
-    return QMarkdownTextEdit::viewportEvent(event);
-}
-
-void QOwnNotesMarkdownTextEdit::applyMarkdownLspDiagnosticsSelections() {
-    const QList<QTextEdit::ExtraSelection> selections = extraSelections();
-    QList<QTextEdit::ExtraSelection> filteredSelections;
-    filteredSelections.reserve(selections.size());
-    for (const QTextEdit::ExtraSelection &selection : selections) {
-        if (selection.format.property(kMarkdownLspDiagnosticProperty).toBool()) {
-            continue;
-        }
-        filteredSelections.append(selection);
-    }
-
-    filteredSelections += _markdownLspDiagnosticsSelections;
-    setExtraSelections(filteredSelections);
 }

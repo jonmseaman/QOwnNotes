@@ -270,9 +270,15 @@ set(SOURCE_FILES
     dialogs/tabledialog.cpp
     dialogs/tabledialog.h
     dialogs/tabledialog.ui
+    dialogs/markdowntabledialog.cpp
+    dialogs/markdowntabledialog.h
+    dialogs/markdowntabledialog.ui
     dialogs/notedialog.cpp
     dialogs/notedialog.h
     dialogs/notedialog.ui
+    dialogs/notebookmarkdialog.cpp
+    dialogs/notebookmarkdialog.h
+    dialogs/notebookmarkdialog.ui
     dialogs/websockettokendialog.cpp
     dialogs/websockettokendialog.h
     dialogs/websockettokendialog.ui
@@ -391,8 +397,12 @@ set(SOURCE_FILES
     services/harperchecker.cpp
     services/harperchecker.h
     services/harpertypes.h
+    services/markdownlspignoredrules.cpp
+    services/markdownlspignoredrules.h
     services/markdownlspclient.cpp
     services/markdownlspclient.h
+    services/markdownlspdocumenttracker.cpp
+    services/markdownlspdocumenttracker.h
     services/settingsservice.cpp
     services/settingsservice.h
     libraries/piwiktracker/piwiktracker.h
@@ -502,6 +512,9 @@ set(SOURCE_FILES
     widgets/settings/harpersettingswidget.cpp
     widgets/settings/harpersettingswidget.h
     widgets/settings/harpersettingswidget.ui
+    widgets/settings/markdownlspsettingswidget.cpp
+    widgets/settings/markdownlspsettingswidget.h
+    widgets/settings/markdownlspsettingswidget.ui
     widgets/settings/networksettingswidget.cpp
     widgets/settings/networksettingswidget.h
     widgets/settings/networksettingswidget.ui

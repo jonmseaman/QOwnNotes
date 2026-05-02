@@ -176,6 +176,7 @@ SOURCES += main.cpp\
     services/harperclient.cpp \
     services/harperchecker.cpp \
     services/databaseservice.cpp \
+    services/markdownlspignoredrules.cpp \
     threads/scriptthread.cpp \
     widgets/graphicsview.cpp \
     widgets/qownnotesmarkdowntextedit.cpp \
@@ -187,6 +188,7 @@ SOURCES += main.cpp\
     services/webappclientservice.cpp \
      services/openaiservice.cpp \
     services/markdownlspclient.cpp \
+    services/markdownlspdocumenttracker.cpp \
     services/mcpservice.cpp \
     services/settingsservice.cpp \
     dialogs/masterdialog.cpp \
@@ -216,8 +218,10 @@ SOURCES += main.cpp\
     dialogs/storedattachmentsdialog.cpp \
     dialogs/actiondialog.cpp \
     dialogs/tabledialog.cpp \
+    dialogs/markdowntabledialog.cpp \
     libraries/qtcsv/src/sources/reader.cpp \
     dialogs/notedialog.cpp \
+    dialogs/notebookmarkdialog.cpp \
     dialogs/filedialog.cpp \
     dialogs/scriptrepositorydialog.cpp \
     dialogs/dictionarymanagerdialog.cpp \
@@ -244,6 +248,7 @@ SOURCES += main.cpp\
     widgets/settings/debugsettingswidget.cpp \
     widgets/settings/languagetoolsettingswidget.cpp \
     widgets/settings/harpersettingswidget.cpp \
+    widgets/settings/markdownlspsettingswidget.cpp \
      widgets/settings/networksettingswidget.cpp \
      widgets/settings/owncloudsettingswidget.cpp \
      widgets/settings/todosettingswidget.cpp \
@@ -349,7 +354,9 @@ HEADERS  += mainwindow.h \
     services/metricsservice.h \
     services/cryptoservice.h \
      services/openaiservice.h \
+    services/markdownlspignoredrules.h \
     services/markdownlspclient.h \
+    services/markdownlspdocumenttracker.h \
     services/mcpservice.h \
     services/settingsservice.h \
     dialogs/masterdialog.h \
@@ -379,12 +386,14 @@ HEADERS  += mainwindow.h \
     dialogs/storedattachmentsdialog.h \
     dialogs/actiondialog.h \
     dialogs/tabledialog.h \
+    dialogs/markdowntabledialog.h \
     libraries/qtcsv/src/include/qtcsv_global.h \
     libraries/qtcsv/src/include/abstractdata.h \
     libraries/qtcsv/src/include/reader.h \
     libraries/qtcsv/src/sources/filechecker.h \
     libraries/qtcsv/src/sources/symbols.h \
     dialogs/notedialog.h \
+    dialogs/notebookmarkdialog.h \
     dialogs/filedialog.h \
     dialogs/scriptrepositorydialog.h \
     dialogs/dictionarymanagerdialog.h \
@@ -411,6 +420,7 @@ HEADERS  += mainwindow.h \
     widgets/settings/debugsettingswidget.h \
     widgets/settings/languagetoolsettingswidget.h \
     widgets/settings/harpersettingswidget.h \
+    widgets/settings/markdownlspsettingswidget.h \
      widgets/settings/networksettingswidget.h \
      widgets/settings/owncloudsettingswidget.h \
      widgets/settings/todosettingswidget.h \
@@ -479,7 +489,9 @@ FORMS    += mainwindow.ui \
     dialogs/storedattachmentsdialog.ui \
     dialogs/actiondialog.ui \
     dialogs/tabledialog.ui \
+    dialogs/markdowntabledialog.ui \
     dialogs/notedialog.ui \
+   dialogs/notebookmarkdialog.ui \
     dialogs/scriptrepositorydialog.ui \
     dialogs/dictionarymanagerdialog.ui \
     widgets/qtexteditsearchwidget.ui \
@@ -495,6 +507,7 @@ FORMS    += mainwindow.ui \
     widgets/settings/debugsettingswidget.ui \
     widgets/settings/languagetoolsettingswidget.ui \
     widgets/settings/harpersettingswidget.ui \
+    widgets/settings/markdownlspsettingswidget.ui \
      widgets/settings/networksettingswidget.ui \
      widgets/settings/owncloudsettingswidget.ui \
      widgets/settings/todosettingswidget.ui \

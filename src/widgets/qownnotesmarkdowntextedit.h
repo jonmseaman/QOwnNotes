@@ -7,10 +7,12 @@
 #include "helpers/qownnotesmarkdownhighlighter.h"
 #include "libraries/qmarkdowntextedit/qmarkdowntextedit.h"
 #include "services/markdownlspclient.h"
+class MarkdownLspDocumentTracker;
 class MainWindow;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
+class MarkdownLspIgnoredRules;
 class QOwnSpellChecker;
 
 #ifdef LANGUAGETOOL_ENABLED
@@ -157,10 +159,10 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     bool eventFilter(QObject *obj, QEvent *event) override;
     void keyPressEvent(QKeyEvent *e) override;
     void focusInEvent(QFocusEvent *e) override;
-    bool viewportEvent(QEvent *event) override;
     int sidebarAdditionalWidth() const override;
     void paintSidebar(QPainter *painter, const QRect &eventRect) override;
     bool sidebarMousePressEvent(QMouseEvent *event) override;
+    QVariant inputMethodQuery(Qt::InputMethodQuery property) const override;
 
    private:
     struct FoldRegion {
@@ -177,8 +179,8 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     void onContextMenu(QPoint pos);
 
     void overrideFontSizeStyle(int fontSize);
-
     QMenu *spellCheckContextMenu(QPoint pos);
+    QMenu *markdownLspContextMenu(const QTextCursor &cursorAtMouse);
 #ifdef LANGUAGETOOL_ENABLED
     void addLanguageToolMenuSection(QMenu *menu, const QTextCursor &cursorAtMouse,
                                     const QTextCursor &selectedCursor, bool &hasEntries);
@@ -216,14 +218,14 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     void showMarkdownLspCompletions(int requestId, const QStringList &items);
     void showMarkdownLspDiagnostics(const QString &uri,
                                     const QVector<MarkdownLspClient::Diagnostic> &diagnostics);
-    void applyMarkdownLspDiagnosticsSelections();
+    QVector<MarkdownLspClient::Diagnostic> filteredMarkdownLspDiagnostics(
+        const QVector<MarkdownLspClient::Diagnostic> &diagnostics) const;
+    void applyMarkdownLspDiagnostics(const QVector<MarkdownLspClient::Diagnostic> &diagnostics);
+    void refreshMarkdownLspDiagnostics();
     void applyMarkdownLspTextEdits(const QVector<MarkdownLspClient::TextEdit> &edits);
     void applyMarkdownLspFormatting(int requestId,
                                     const QVector<MarkdownLspClient::TextEdit> &edits);
     void requestMarkdownLspFormatting(bool useSelection);
-    void requestMarkdownLspCodeActions(const QTextCursor &cursor);
-    void showMarkdownLspCodeActions(int requestId,
-                                    const QVector<MarkdownLspClient::CodeAction> &actions);
     void paintMarkdownImagePreviews();
     void refreshFoldingSidebar();
     static bool isHeadingBlock(const QTextBlock &block, int *level = nullptr);
@@ -253,8 +255,11 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     bool _isInsertingAiSuggestion = false;
 
     MarkdownLspClient *_markdownLspClient = nullptr;
+    MarkdownLspDocumentTracker *_markdownLspTracker = nullptr;
     QTimer *_markdownLspChangeTimer = nullptr;
     QString _markdownLspUri;
+    QString _markdownLspCommand;
+    QStringList _markdownLspArguments;
     QString _markdownLspPendingText;
     int _markdownLspVersion = 0;
     int _markdownLspCompletionRequestId = -1;
@@ -262,10 +267,9 @@ class QOwnNotesMarkdownTextEdit : public QMarkdownTextEdit {
     int _markdownLspRangeFormattingRequestId = -1;
     int _markdownLspCodeActionRequestId = -1;
     bool _markdownLspApplyingEdits = false;
+    QVector<MarkdownLspClient::Diagnostic> _markdownLspAllDiagnostics;
     QVector<MarkdownLspClient::Diagnostic> _markdownLspDiagnostics;
-    QVector<MarkdownLspClient::CodeAction> _markdownLspLastCodeActions;
     bool _markdownLspEnabled = false;
-    QList<QTextEdit::ExtraSelection> _markdownLspDiagnosticsSelections;
 
     // Static pointer to the currently active editor for AI autocomplete
     static QOwnNotesMarkdownTextEdit *_activeAutocompleteEditor;
