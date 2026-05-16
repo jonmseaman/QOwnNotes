@@ -23,7 +23,7 @@
 #include "dialogs/settingsdialog.h"
 #include "entities/notesubfolder.h"
 #include "mainwindow.h"
-#include "services/owncloudservice.h"
+#include "services/cloudservice.h"
 #include "services/settingsservice.h"
 #include "ui_notefoldersettingswidget.h"
 #include "utils/gui.h"
@@ -277,21 +277,20 @@ void NoteFolderSettingsWidget::on_noteFolderActiveCheckBox_stateChanged(int arg1
 }
 
 void NoteFolderSettingsWidget::on_noteFolderRemotePathButton_clicked() {
-    // Request the dialog to store settings so the OwnCloud connection is up-to-date
+    // Request the dialog to store settings so the Cloud connection is up-to-date
     Q_EMIT storeSettingsRequested();
 
     setNoteFolderRemotePathTreeWidgetFrameVisibility(true);
 
     _noteFolderRemotePathTreeStatusBar->showMessage(tr("Loading folders from server"));
 
-    OwnCloudService *ownCloud =
-        OwnCloudService::instance(true, _selectedNoteFolder.getCloudConnectionId());
-    ownCloud->settingsGetFileList(qobject_cast<SettingsDialog *>(window()), QLatin1String(""));
+    CloudService *cloud = CloudService::instance(true, _selectedNoteFolder.getCloudConnectionId());
+    cloud->settingsGetFileList(qobject_cast<SettingsDialog *>(window()), QLatin1String(""));
 }
 
 /**
  * Populates the note folder remote path tree with items.
- * Callback function from OwnCloudService::loadDirectory() via SettingsDialog.
+ * Callback function from CloudService::loadDirectory() via SettingsDialog.
  */
 void NoteFolderSettingsWidget::setNoteFolderRemotePathList(QStringList pathList) {
     if (pathList.count() <= 1) {
@@ -366,9 +365,8 @@ void NoteFolderSettingsWidget::on_noteFolderRemotePathTreeWidget_currentItemChan
     _noteFolderRemotePathTreeStatusBar->showMessage(
         tr("Loading folders in '%1' from server").arg(current->text(0)));
 
-    OwnCloudService *ownCloud =
-        OwnCloudService::instance(true, _selectedNoteFolder.getCloudConnectionId());
-    ownCloud->settingsGetFileList(qobject_cast<SettingsDialog *>(window()), folderName);
+    CloudService *cloud = CloudService::instance(true, _selectedNoteFolder.getCloudConnectionId());
+    cloud->settingsGetFileList(qobject_cast<SettingsDialog *>(window()), folderName);
 }
 
 void NoteFolderSettingsWidget::on_noteFolderCloudConnectionComboBox_currentIndexChanged(int index) {
@@ -383,7 +381,7 @@ void NoteFolderSettingsWidget::on_noteFolderCloudConnectionComboBox_currentIndex
     }
 }
 
-void NoteFolderSettingsWidget::on_useOwnCloudPathButton_clicked() {
+void NoteFolderSettingsWidget::on_useCloudPathButton_clicked() {
     QTreeWidgetItem *item = ui->noteFolderRemotePathTreeWidget->currentItem();
     if (item == nullptr) {
         return;
@@ -472,21 +470,21 @@ void NoteFolderSettingsWidget::populateSubfolderTree() {
 
     // Disconnect to avoid saving while populating
     disconnect(ui->noteFolderSubfolderTreeWidget, &QTreeWidget::itemChanged, this,
-               &NoteFolderSettingsWidget::saveSubfolderTreeSelection);
+               &NoteFolderSettingsWidget::onSubfolderTreeItemChanged);
 
     const QStringList excludedPaths = _selectedNoteFolder.excludedSubfolderPaths();
 
-    // First pass: build the tree without check states (avoid auto-tristate interference)
+    // First pass: build the tree without check states
     populateSubfolderTreeFromDir(nullptr, localPath, QString());
 
-    // Second pass: apply check states bottom-up so auto-tristate works correctly
+    // Second pass: apply check states from the stored excluded paths
     applySubfolderTreeCheckStates(ui->noteFolderSubfolderTreeWidget, excludedPaths);
 
     ui->noteFolderSubfolderTreeWidget->expandAll();
 
     // Reconnect
     connect(ui->noteFolderSubfolderTreeWidget, &QTreeWidget::itemChanged, this,
-            &NoteFolderSettingsWidget::saveSubfolderTreeSelection);
+            &NoteFolderSettingsWidget::onSubfolderTreeItemChanged);
 }
 
 /**
@@ -511,7 +509,7 @@ void NoteFolderSettingsWidget::populateSubfolderTreeFromDir(QTreeWidgetItem *par
         auto *item = new QTreeWidgetItem();
         item->setText(0, folder);
         item->setData(0, Qt::UserRole, childRelPath);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsAutoTristate);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
 
         if (parentItem) {
             parentItem->addChild(item);
@@ -525,9 +523,8 @@ void NoteFolderSettingsWidget::populateSubfolderTreeFromDir(QTreeWidgetItem *par
 }
 
 /**
- * Applies check states to subfolder tree items bottom-up.
+ * Applies check states to subfolder tree items.
  * Items whose path (or an ancestor path) is in excludedPaths are unchecked.
- * Processing bottom-up ensures auto-tristate computes parent states correctly.
  */
 void NoteFolderSettingsWidget::applySubfolderTreeCheckStates(QTreeWidget *tree,
                                                              const QStringList &excludedPaths) {
@@ -537,8 +534,7 @@ void NoteFolderSettingsWidget::applySubfolderTreeCheckStates(QTreeWidget *tree,
 }
 
 /**
- * Recursively applies check states to a tree item and its children (bottom-up).
- * Children are processed first so auto-tristate computes parent states correctly.
+ * Recursively applies check states to a tree item and its children.
  */
 void NoteFolderSettingsWidget::applyCheckStateToItem(QTreeWidgetItem *item,
                                                      const QStringList &excludedPaths) {
@@ -553,25 +549,70 @@ void NoteFolderSettingsWidget::applyCheckStateToItem(QTreeWidgetItem *item,
         }
     }
 
-    if (excluded) {
-        // Mark excluded branches recursively so every visible item gets a checkbox
-        for (int i = 0; i < item->childCount(); ++i) {
-            applyCheckStateToItem(item->child(i), excludedPaths);
-        }
+    item->setCheckState(0, excluded ? Qt::Unchecked : Qt::Checked);
 
-        item->setCheckState(0, Qt::Unchecked);
-        return;
-    }
-
-    // Process children first (bottom-up)
     for (int i = 0; i < item->childCount(); ++i) {
         applyCheckStateToItem(item->child(i), excludedPaths);
     }
 
-    // Leaf nodes: set checked explicitly; non-leaf: auto-tristate computes from children
-    if (item->childCount() == 0) {
-        item->setCheckState(0, Qt::Checked);
+    if (!excluded && item->childCount() > 0) {
+        item->setCheckState(0, subfolderTreeParentCheckState(item));
     }
+}
+
+void NoteFolderSettingsWidget::onSubfolderTreeItemChanged(QTreeWidgetItem *item, int column) {
+    if (_updatingSubfolderTreeCheckStates || (column != 0)) {
+        return;
+    }
+
+    _updatingSubfolderTreeCheckStates = true;
+
+    const Qt::CheckState checkState = item->checkState(0);
+    if (checkState == Qt::Checked || checkState == Qt::Unchecked) {
+        setSubfolderTreeChildrenCheckState(item, checkState);
+    }
+
+    updateSubfolderTreeParentCheckStates(item->parent());
+
+    _updatingSubfolderTreeCheckStates = false;
+    saveSubfolderTreeSelection();
+}
+
+void NoteFolderSettingsWidget::setSubfolderTreeChildrenCheckState(QTreeWidgetItem *item,
+                                                                  Qt::CheckState checkState) {
+    for (int i = 0; i < item->childCount(); ++i) {
+        QTreeWidgetItem *child = item->child(i);
+        child->setCheckState(0, checkState);
+        setSubfolderTreeChildrenCheckState(child, checkState);
+    }
+}
+
+void NoteFolderSettingsWidget::updateSubfolderTreeParentCheckStates(QTreeWidgetItem *item) {
+    while (item != nullptr) {
+        item->setCheckState(0, subfolderTreeParentCheckState(item));
+        item = item->parent();
+    }
+}
+
+Qt::CheckState NoteFolderSettingsWidget::subfolderTreeParentCheckState(QTreeWidgetItem *item) {
+    bool hasCheckedChild = false;
+    bool hasUncheckedChild = false;
+
+    for (int i = 0; i < item->childCount(); ++i) {
+        const Qt::CheckState childCheckState = item->child(i)->checkState(0);
+        hasCheckedChild = hasCheckedChild || (childCheckState != Qt::Unchecked);
+        hasUncheckedChild = hasUncheckedChild || (childCheckState != Qt::Checked);
+    }
+
+    if (!hasUncheckedChild) {
+        return Qt::Checked;
+    }
+
+    if (!hasCheckedChild && item->checkState(0) == Qt::Unchecked) {
+        return Qt::Unchecked;
+    }
+
+    return Qt::PartiallyChecked;
 }
 
 /**
@@ -615,17 +656,4 @@ void NoteFolderSettingsWidget::on_allowDifferentNoteFileNameCheckBox_toggled(boo
 void NoteFolderSettingsWidget::on_noteFolderGitCommitCheckBox_toggled(bool checked) {
     _selectedNoteFolder.setUseGit(checked);
     _selectedNoteFolder.store();
-}
-
-void NoteFolderSettingsWidget::replaceOwnCloudText() {
-    ui->noteFolderRemotePathLabel->setText(
-        Utils::Misc::replaceOwnCloudText(ui->noteFolderRemotePathLabel->text()));
-    ui->noteFolderRemotePathListLabel->setText(
-        Utils::Misc::replaceOwnCloudText(ui->noteFolderRemotePathListLabel->text()));
-    ui->useOwnCloudPathButton->setText(
-        Utils::Misc::replaceOwnCloudText(ui->useOwnCloudPathButton->text()));
-    ui->noteFolderRemotePathButton->setToolTip(
-        Utils::Misc::replaceOwnCloudText(ui->noteFolderRemotePathButton->toolTip()));
-    ui->noteFolderRemotePathLineEdit->setToolTip(
-        Utils::Misc::replaceOwnCloudText(ui->noteFolderRemotePathLineEdit->toolTip()));
 }

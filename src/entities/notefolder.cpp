@@ -1,6 +1,6 @@
 #include "notefolder.h"
 
-#include <services/owncloudservice.h>
+#include <services/cloudservice.h>
 #include <utils/misc.h>
 
 #include <QDebug>
@@ -172,9 +172,13 @@ bool NoteFolder::fillFromQuery(const QSqlQuery &query) {
 
 QList<NoteFolder> NoteFolder::fetchAll() {
     const QSqlDatabase db = QSqlDatabase::database(QStringLiteral("disk"));
-    QSqlQuery query(db);
-
     QList<NoteFolder> noteFolderList;
+
+    if (!db.tables().contains(QStringLiteral("noteFolder"), Qt::CaseInsensitive)) {
+        return noteFolderList;
+    }
+
+    QSqlQuery query(db);
 
     query.prepare(QStringLiteral("SELECT * FROM noteFolder ORDER BY priority ASC, id ASC"));
     if (!query.exec()) {
@@ -258,7 +262,7 @@ void NoteFolder::setAsCurrent() const {
                       Utils::Misc::makePathRelativeToPortableDataPathIfNeeded(localPath));
 
     // we need to reset the instance
-    OwnCloudService::instance(true);
+    CloudService::instance(true);
 }
 
 /**

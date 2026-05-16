@@ -21,8 +21,8 @@
 #include <entities/notefolder.h>
 #include <entities/notesubfolder.h>
 #include <entities/script.h>
+#include <services/cloudservice.h>
 #include <services/databaseservice.h>
-#include <services/owncloudservice.h>
 #include <services/updateservice.h>
 #include <threads/scriptthread.h>
 
@@ -53,6 +53,7 @@
 #include <QXmlStreamReader>
 #include <QtGui/QIcon>
 #include <algorithm>
+#include <random>
 #include <utility>
 
 #include "gui.h"
@@ -1298,23 +1299,6 @@ QString Utils::Misc::transformLineFeeds(QString text) {
 }
 
 /**
- * Replaces the text "ownCloud" by "ownCloud / Nextcloud"
- *
- * @param text
- * @param useShortText
- * @return
- */
-QString Utils::Misc::replaceOwnCloudText(QString text, bool useShortText) {
-    if (text.contains(QStringLiteral("Nextcloud"))) {
-        return text;
-    }
-
-    QString replaceText =
-        useShortText ? QStringLiteral("NC / oC") : QStringLiteral("Nextcloud / ownCloud");
-    return text.replace(QStringLiteral("ownCloud"), replaceText, Qt::CaseInsensitive);
-}
-
-/**
  * Declares that we need a restart
  */
 void Utils::Misc::needRestart() { qApp->setProperty("needsRestart", true); }
@@ -2377,7 +2361,7 @@ QString Utils::Misc::generateDebugInformation(bool withGitHubLineBreaks, bool an
                                  "webSocketServerService/bookmarkSuggestionApiToken",
                                  "webAppClientService/token"};
 
-    // under OS X we have to ignore some keys
+    // under macOS we have to ignore some keys
 #ifdef Q_OS_MAC
     QStringList keyIgnoreList;
     keyIgnoreList << "AKDeviceUnlockState"
@@ -2392,7 +2376,7 @@ QString Utils::Misc::generateDebugInformation(bool withGitHubLineBreaks, bool an
         QString key = itr.next();
         QVariant value = settings.value(key);
 
-        // under OS X we have to ignore some keys
+        // under macOS we have to ignore some keys
 #ifdef Q_OS_MAC
         bool ignoreKey = false;
 
@@ -2495,7 +2479,7 @@ bool Utils::Misc::regExpInListMatches(const QString &text, const QStringList &re
  */
 void Utils::Misc::transformNextcloudPreviewImages(QString &html, int maxImageWidth,
                                                   ExternalImageHash *externalImageHash) {
-    OwnCloudService *ownCloud = OwnCloudService::instance();
+    CloudService *cloud = CloudService::instance();
 
     static const QRegularExpression re(
         QStringLiteral(
@@ -2515,8 +2499,7 @@ void Utils::Misc::transformNextcloudPreviewImages(QString &html, int maxImageWid
             inlineImageTag = hashItem.imageTag;
             imageWidth = hashItem.imageWidth;
         } else {
-            inlineImageTag =
-                ownCloud->nextcloudPreviewImageTagToInlineImageTag(imageTag, imageWidth);
+            inlineImageTag = cloud->nextcloudPreviewImageTagToInlineImageTag(imageTag, imageWidth);
             hashItem.imageTag = inlineImageTag;
             hashItem.imageWidth = imageWidth;
             externalImageHash->insert(imageTag, hashItem);
@@ -2656,11 +2639,16 @@ QString Utils::Misc::generateRandomString(int length) {
         QStringLiteral("ABCDEFGHKLMNPQRSTUVWXYZabcdefghkmnpqrstuvwxyz23456789"));
 
     QString randomString;
+#if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
+    std::random_device randomDevice;
+    std::uniform_int_distribution<int> distribution(0, possibleCharacters.length() - 1);
+#endif
+
     for (int i = 0; i < length; ++i) {
 #if QT_VERSION < QT_VERSION_CHECK(5, 10, 0)
-        const int index = qrand() % possibleCharacters.length();
+        const int index = distribution(randomDevice);
 #else
-        const quint32 index = QRandomGenerator::global()->generate() % possibleCharacters.length();
+        const int index = QRandomGenerator::system()->bounded(possibleCharacters.length());
 #endif
         QChar nextChar = possibleCharacters.at(index);
         randomString.append(nextChar);

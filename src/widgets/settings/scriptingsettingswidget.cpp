@@ -14,8 +14,12 @@
 
 #include "scriptingsettingswidget.h"
 
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
 #include <QMenu>
 #include <QPointer>
+#include <QSignalBlocker>
 
 #include "dialogs/filedialog.h"
 #include "dialogs/scriptrepositorydialog.h"
@@ -62,7 +66,8 @@ void ScriptingSettingsWidget::initialize() {
     searchScriptAction->setIcon(QIcon::fromTheme(
         QStringLiteral("edit-find"), QIcon(":icons/breeze-qownnotes/16x16/edit-find.svg")));
     searchScriptAction->setToolTip(tr("Find a script in the script repository"));
-    connect(searchScriptAction, SIGNAL(triggered()), this, SLOT(searchScriptInRepository()));
+    connect(searchScriptAction, &QAction::triggered, this,
+            [this]() { searchScriptInRepository(); });
 
     QAction *updateScriptAction = addScriptMenu->addAction(tr("Check for script updates"));
     updateScriptAction->setIcon(QIcon::fromTheme(
@@ -161,6 +166,76 @@ bool ScriptingSettingsWidget::scriptMatchesSearchFilter(const Script &script,
     }
 
     return infoJson.name.toLower().contains(searchTextLower);
+}
+
+/**
+ * Resets the script metadata fields in the UI
+ */
+void ScriptingSettingsWidget::clearScriptInfoJsonUi() const {
+    ui->scriptVersionLabel->clear();
+    ui->scriptDescriptionLabel->clear();
+    ui->scriptAuthorsLabel->clear();
+    ui->scriptRepositoryLinkLabel->clear();
+    ui->textLabel2->setVisible(false);
+    ui->scriptRepositoryLinkLabel->setVisible(false);
+}
+
+/**
+ * Populates the script metadata fields in the UI
+ */
+void ScriptingSettingsWidget::applyScriptInfoJsonToUi(const ScriptInfoJson &infoJson,
+                                                      bool showRepositoryLink) const {
+    ui->scriptVersionLabel->setText(infoJson.version);
+    ui->scriptDescriptionLabel->setText(infoJson.description);
+    ui->scriptAuthorsLabel->setText(infoJson.richAuthorText);
+
+    const bool hasRepositoryLink = showRepositoryLink && !infoJson.identifier.isEmpty();
+    ui->textLabel2->setVisible(hasRepositoryLink);
+    ui->scriptRepositoryLinkLabel->setVisible(hasRepositoryLink);
+
+    if (hasRepositoryLink) {
+        ui->scriptRepositoryLinkLabel->setText(
+            "<a href=\"https://github.com/qownnotes/scripts/tree/"
+            "master/" +
+            infoJson.identifier + "\">" + tr("Open repository") + "</a>");
+    } else {
+        ui->scriptRepositoryLinkLabel->clear();
+    }
+}
+
+/**
+ * Returns script metadata for a local script if info.json matches the file name
+ */
+bool ScriptingSettingsWidget::getLocalScriptInfoJson(const QString &scriptPath,
+                                                     ScriptInfoJson &infoJson) {
+    infoJson = ScriptInfoJson();
+
+    if (scriptPath.isEmpty()) {
+        return false;
+    }
+
+    const QFileInfo scriptFileInfo(scriptPath);
+    if (!scriptFileInfo.exists()) {
+        return false;
+    }
+
+    QFile infoFile(scriptFileInfo.dir().filePath(QStringLiteral("info.json")));
+    if (!infoFile.exists() || !infoFile.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    const QJsonDocument jsonDocument = QJsonDocument::fromJson(infoFile.readAll());
+    if (!jsonDocument.isObject()) {
+        return false;
+    }
+
+    const ScriptInfoJson localInfoJson(jsonDocument.object());
+    if (QFileInfo(localInfoJson.script).fileName() != scriptFileInfo.fileName()) {
+        return false;
+    }
+
+    infoJson = localInfoJson;
+    return true;
 }
 
 void ScriptingSettingsWidget::on_scriptSearchLineEdit_textChanged(const QString &arg1) {
@@ -317,6 +392,9 @@ void ScriptingSettingsWidget::on_scriptListWidget_currentItemChanged(QListWidget
 void ScriptingSettingsWidget::reloadCurrentScriptPage() {
     QListWidgetItem *item = ui->scriptListWidget->currentItem();
 
+    clearScriptInfoJsonUi();
+    ui->scriptRepositoryItemFrame->setVisible(false);
+
     if (item == nullptr) {
         return;
     }
@@ -331,9 +409,14 @@ void ScriptingSettingsWidget::reloadCurrentScriptPage() {
         ui->scriptEditFrame->setEnabled(true);
 
         bool isScriptFromRepository = _selectedScript.isScriptFromRepository();
+        ScriptInfoJson localInfoJson;
+        const bool hasLocalInfoJson =
+            !isScriptFromRepository &&
+            getLocalScriptInfoJson(_selectedScript.getScriptPath(), localInfoJson);
+
         ui->scriptNameLineEdit->setReadOnly(isScriptFromRepository);
         ui->scriptPathButton->setDisabled(isScriptFromRepository);
-        ui->scriptRepositoryItemFrame->setVisible(isScriptFromRepository);
+        ui->scriptRepositoryItemFrame->setVisible(isScriptFromRepository || hasLocalInfoJson);
         ui->localScriptItemFrame->setHidden(isScriptFromRepository);
         ui->repositoryScriptItemFrame->setHidden(!isScriptFromRepository);
         ui->scriptNameLineEdit->setHidden(isScriptFromRepository);
@@ -342,16 +425,13 @@ void ScriptingSettingsWidget::reloadCurrentScriptPage() {
         // Add additional information if script was from the script repository
         if (isScriptFromRepository) {
             ScriptInfoJson infoJson = _selectedScript.getScriptInfoJson();
-
-            ui->scriptVersionLabel->setText(infoJson.version);
-            ui->scriptDescriptionLabel->setText(infoJson.description);
-            ui->scriptAuthorsLabel->setText(infoJson.richAuthorText);
-            ui->scriptRepositoryLinkLabel->setText(
-                "<a href=\"https://github.com/qownnotes/scripts/tree/"
-                "master/" +
-                infoJson.identifier + "\">" + tr("Open repository") + "</a>");
+            applyScriptInfoJsonToUi(infoJson, true);
         } else {
             ui->scriptNameLineEdit->setText(_selectedScript.getName());
+
+            if (hasLocalInfoJson) {
+                applyScriptInfoJsonToUi(localInfoJson, false);
+            }
         }
 
         // Get the registered script settings variables
@@ -384,6 +464,7 @@ void ScriptingSettingsWidget::reloadCurrentScriptPage() {
         validateCurrentScript();
     } else {
         ui->scriptEditFrame->setEnabled(false);
+        ui->scriptRepositoryItemFrame->setVisible(false);
         ui->scriptNameLineEdit->clear();
         ui->scriptPathLineEdit->clear();
     }
@@ -426,6 +507,8 @@ void ScriptingSettingsWidget::on_scriptNameLineEdit_editingFinished() {
  * Stores the enabled states of the scripts
  */
 void ScriptingSettingsWidget::storeScriptListEnabledState() {
+    bool changed = false;
+
     for (int i = 0; i < ui->scriptListWidget->count(); i++) {
         QListWidgetItem *item = ui->scriptListWidget->item(i);
         bool enabled = item->checkState() == Qt::Checked;
@@ -436,12 +519,17 @@ void ScriptingSettingsWidget::storeScriptListEnabledState() {
             if (script.getEnabled() != enabled) {
                 script.setEnabled(enabled);
                 script.store();
+                changed = true;
             }
         }
     }
 
-    // Reload the scripting engine
-    ScriptingService::instance()->reloadEngine();
+    // Only reload the scripting engine if the enabled state of at least one
+    // script actually changed — avoids an expensive engine restart on every
+    // settings dialog OK press when nothing was modified
+    if (changed) {
+        ScriptingService::instance()->reloadEngine();
+    }
 }
 
 void ScriptingSettingsWidget::on_scriptValidationButton_clicked() { validateCurrentScript(); }

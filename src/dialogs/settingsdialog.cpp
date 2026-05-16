@@ -51,13 +51,14 @@
 #include "mainwindow.h"
 #include "release.h"
 #include "scriptrepositorydialog.h"
+#include "services/cloudservice.h"
 #include "services/openaiservice.h"
-#include "services/owncloudservice.h"
 #include "services/settingsservice.h"
 #include "ui_settingsdialog.h"
 #include "version.h"
 #include "widgets/fontcolorwidget.h"
 #include "widgets/settings/aisettingswidget.h"
+#include "widgets/settings/cloudsettingswidget.h"
 #include "widgets/settings/debugoptionsettingswidget.h"
 #include "widgets/settings/debugsettingswidget.h"
 #include "widgets/settings/editorfontcolorsettingswidget.h"
@@ -66,7 +67,6 @@
 #include "widgets/settings/languagetoolsettingswidget.h"
 #include "widgets/settings/markdownlspsettingswidget.h"
 #include "widgets/settings/networksettingswidget.h"
-#include "widgets/settings/owncloudsettingswidget.h"
 #include "widgets/settings/todosettingswidget.h"
 #include "widgets/settings/webapplicationsettingswidget.h"
 #include "widgets/settings/webcompanionsettingswidget.h"
@@ -124,6 +124,27 @@ SettingsDialog::SettingsDialog(int page, QWidget *parent)
 
     ui->gitSettingsWidget->initialize();
 
+    // Update cloud connection combo boxes when cloud settings change
+    connect(ui->cloudSettingsWidget, &CloudSettingsWidget::cloudConnectionsChanged,
+            [this](const QList<CloudConnection> &connections) {
+                ui->noteFolderSettingsWidget->populateCloudConnectionComboBox(
+                    connections, NoteFolder::currentNoteFolder().getCloudConnectionId());
+                ui->todoSettingsWidget->populateCloudConnectionComboBox(
+                    connections, CloudConnection::currentTodoCalendarCloudConnection().getId());
+            });
+
+    // Connect todo settings widget signals before readSettings(), because todo
+    // settings may request an initial calendar list reload when no list is cached.
+    connect(ui->todoSettingsWidget, &TodoSettingsWidget::storeSettingsRequested, this, [this]() {
+        ui->cloudSettingsWidget->storeSettings();
+        ui->todoSettingsWidget->storeSettings();
+    });
+    connect(ui->todoSettingsWidget, &TodoSettingsWidget::reloadCalendarListRequested, this,
+            [this]() {
+                CloudService *cloud = CloudService::instance(true);
+                cloud->settingsGetCalendarList(this);
+            });
+
     readSettings();
 
     // initializes the main splitter
@@ -145,9 +166,6 @@ SettingsDialog::SettingsDialog(int page, QWidget *parent)
     // expand all items in the settings tree widget
     ui->settingsTreeWidget->expandAll();
 
-    // replace the "ownCloud" text by "ownCloud / NextCloud"
-    replaceOwnCloudText();
-
     // Declare that we need to restart the application if certain settings are changed
     connect(ui->panelsSettingsWidget, &PanelsSettingsWidget::needRestart, this,
             &SettingsDialog::needRestart);
@@ -167,9 +185,9 @@ SettingsDialog::SettingsDialog(int page, QWidget *parent)
 
     // Connect debug settings widget signals
     connect(ui->debugSettingsWidget, &DebugSettingsWidget::aboutToOutputSettings,
-            ui->ownCloudSettingsWidget, &OwnCloudSettingsWidget::storeOwncloudDebugData);
-    // Set back-pointer so OwnCloudSettingsWidget can pass SettingsDialog* to OwnCloudService
-    ui->ownCloudSettingsWidget->setSettingsDialog(this);
+            ui->cloudSettingsWidget, &CloudSettingsWidget::storeCloudDebugData);
+    // Set back-pointer so CloudSettingsWidget can pass SettingsDialog* to CloudService
+    ui->cloudSettingsWidget->setSettingsDialog(this);
     connect(ui->debugSettingsWidget, &DebugSettingsWidget::issueAssistantRequested, this, [this]() {
         MainWindow *mainWindow = MainWindow::instance();
         if (mainWindow == nullptr) {
@@ -183,24 +201,6 @@ SettingsDialog::SettingsDialog(int page, QWidget *parent)
     // Connect note folder settings widget signals
     connect(ui->noteFolderSettingsWidget, &NoteFolderSettingsWidget::storeSettingsRequested, this,
             &SettingsDialog::storeSettings);
-
-    // Update cloud connection combo boxes when ownCloud settings change
-    connect(ui->ownCloudSettingsWidget, &OwnCloudSettingsWidget::cloudConnectionsChanged,
-            [this](const QList<CloudConnection> &connections) {
-                ui->noteFolderSettingsWidget->populateCloudConnectionComboBox(
-                    connections, NoteFolder::currentNoteFolder().getCloudConnectionId());
-                ui->todoSettingsWidget->populateCloudConnectionComboBox(
-                    connections, CloudConnection::currentTodoCalendarCloudConnection().getId());
-            });
-
-    // Connect todo settings widget signals
-    connect(ui->todoSettingsWidget, &TodoSettingsWidget::storeSettingsRequested, this,
-            &SettingsDialog::storeSettings);
-    connect(ui->todoSettingsWidget, &TodoSettingsWidget::reloadCalendarListRequested, this,
-            [this]() {
-                OwnCloudService *ownCloud = OwnCloudService::instance(true);
-                ownCloud->settingsGetCalendarList(this);
-            });
 
     connect(ui->aiSettingsWidget, &AiSettingsWidget::searchScriptRepositoryRequested, this,
             [this]() { ui->scriptingSettingsWidget->searchScriptInRepository(); });
@@ -218,23 +218,6 @@ SettingsDialog::SettingsDialog(int page, QWidget *parent)
 
 void SettingsDialog::searchScriptInRepository() {
     ui->scriptingSettingsWidget->searchScriptInRepository();
-}
-
-/**
- * Replaces the "ownCloud" text by "ownCloud / NextCloud"
- */
-void SettingsDialog::replaceOwnCloudText() const {
-    // Delegate to the widget for ownCloud page labels
-    ui->ownCloudSettingsWidget->replaceOwnCloudText();
-
-    // Todo widget handles its own replaceOwnCloudText
-    ui->todoSettingsWidget->replaceOwnCloudText();
-
-    QTreeWidgetItem *item = ui->settingsTreeWidget->topLevelItem(OwnCloudPage);
-    item->setText(0, Utils::Misc::replaceOwnCloudText(item->text(0)));
-
-    // Note folder settings
-    ui->noteFolderSettingsWidget->replaceOwnCloudText();
 }
 
 /**
@@ -299,7 +282,7 @@ void SettingsDialog::initPortableModePage() {
 
 void SettingsDialog::storeSettings() {
     SettingsService settings;
-    ui->ownCloudSettingsWidget->storeSettings();
+    ui->cloudSettingsWidget->storeSettings();
 
     ui->todoSettingsWidget->storeSettings();
     ui->localTrashSettingsWidget->storeSettings();
@@ -362,8 +345,8 @@ void SettingsDialog::readSettings() {
     // Set current note folder list item via the widget
     ui->noteFolderSettingsWidget->readSettings();
 
-    // Read ownCloud settings via the widget
-    ui->ownCloudSettingsWidget->readSettings();
+    // Read cloud settings via the widget
+    ui->cloudSettingsWidget->readSettings();
 
     ui->todoSettingsWidget->readSettings();
 
@@ -379,9 +362,6 @@ void SettingsDialog::readSettings() {
     ui->markdownLspSettingsWidget->readSettings();
     ui->networkSettingsWidget->readSettings();
     ui->editorFontColorSettingsWidget->readSettings();
-
-    // Load the shortcut settings
-    loadShortcutSettings();
 
     // Load git settings
     ui->gitSettingsWidget->readSettings();
@@ -430,6 +410,10 @@ void SettingsDialog::loadShortcutSettings() {
     ui->shortcutTreeWidget->clear();
     ui->shortcutTreeWidget->setColumnCount(3);
 
+    // Clear the cached widget maps so storeShortcutSettings() can rebuild them
+    _shortcutWidgetMap.clear();
+    _globalShortcutWidgetMap.clear();
+
     // shortcuts on toolbars and note folders don't work yet
     const QStringList disabledMenuNames = QStringList() << QStringLiteral("menuToolbars")
                                                         << QStringLiteral("noteFoldersMenu");
@@ -444,8 +428,18 @@ void SettingsDialog::loadShortcutSettings() {
     const QList<QMenu *> menus =
         mainWindow->menuBar()->findChildren<QMenu *>(QString(), Qt::FindDirectChildrenOnly);
 
+    // Show a progress bar so the user gets visual feedback while shortcuts load
+    ui->shortcutLoadingProgressBar->setMaximum(menus.size());
+    ui->shortcutLoadingProgressBar->setValue(0);
+    ui->shortcutLoadingProgressBar->setVisible(true);
+
+    int menuIndex = 0;
+
     // loop through all top-level menus and build the tree recursively
     for (const QMenu *menu : menus) {
+        ui->shortcutLoadingProgressBar->setValue(++menuIndex);
+        qApp->processEvents(QEventLoop::ExcludeUserInputEvents);
+
         if (disabledMenuNames.contains(menu->objectName())) {
             continue;
         }
@@ -454,6 +448,8 @@ void SettingsDialog::loadShortcutSettings() {
                                  shortcutButtonInactiveColor, disableShortcutButtonIcon,
                                  clearButtonIcon, disabledMenuNames);
     }
+
+    ui->shortcutLoadingProgressBar->setVisible(false);
 
     Utils::Gui::initTreeWidgetHeaderOrderPersistence(
         ui->shortcutTreeWidget, QStringLiteral("SettingsDialog/shortcutTreeWidgetHeaderOrder"));
@@ -580,6 +576,9 @@ void SettingsDialog::buildShortcutTreeForMenu(const QMenu *menu, QTreeWidgetItem
         frame->setLayout(frameLayout);
         ui->shortcutTreeWidget->setItemWidget(actionItem, 1, frame);
 
+        // Store the local shortcut widget in the map for O(1) lookup during store
+        _shortcutWidgetMap[actionObjectName] = keyWidget;
+
         // create the key widget for the global shortcut
         auto *globalShortcutKeyWidget = new QKeySequenceWidget();
         globalShortcutKeyWidget->setFixedWidth(240);
@@ -594,6 +593,9 @@ void SettingsDialog::buildShortcutTreeForMenu(const QMenu *menu, QTreeWidgetItem
                 .toString());
 
         ui->shortcutTreeWidget->setItemWidget(actionItem, 2, globalShortcutKeyWidget);
+
+        // Store the global shortcut widget in the map for O(1) lookup during store
+        _globalShortcutWidgetMap[actionObjectName] = globalShortcutKeyWidget;
     }
 }
 
@@ -741,57 +743,53 @@ QKeySequenceWidget *SettingsDialog::findGlobalKeySequenceWidget(const QString &o
  * Stores the local and global keyboard shortcut settings
  */
 void SettingsDialog::storeShortcutSettings() {
-    SettingsService settings;
-    MainWindow *mainWindow = MainWindow::instance();
-
-    if (mainWindow == nullptr) {
+    // If the shortcut page was never visited, the tree was never built —
+    // nothing to store
+    if (_shortcutWidgetMap.isEmpty() && _globalShortcutWidgetMap.isEmpty()) {
         return;
     }
 
-    // Store shortcuts by iterating through the actual menu actions (the same
-    // way initShortcuts reads them) and looking up the corresponding widgets
-    // in the tree. This avoids any issues with tree widget item traversal.
-    const QList<QMenu *> menus = mainWindow->menuList();
+    SettingsService settings;
 
-    for (QMenu *menu : menus) {
-        for (QAction *action : menu->actions()) {
-            const QString actionObjectName = action->objectName();
+    // Use the pre-built hash maps populated during loadShortcutSettings() for
+    // O(1) per-action lookup instead of O(n) recursive tree traversal
+    for (auto it = _shortcutWidgetMap.constBegin(); it != _shortcutWidgetMap.constEnd(); ++it) {
+        const QString &actionObjectName = it.key();
+        QKeySequenceWidget *keyWidget = it.value();
 
-            if (actionObjectName.isEmpty()) {
-                continue;
-            }
+        if (keyWidget == nullptr) {
+            continue;
+        }
 
-            // Find the key sequence widget for this action in the tree
-            auto *keyWidget = findKeySequenceWidget(actionObjectName);
+        QKeySequence keySequence = keyWidget->keySequence();
+        QKeySequence defaultKeySequence = keyWidget->defaultKeySequence();
+        const QString settingsKey = QStringLiteral("Shortcuts/MainWindow-") + actionObjectName;
 
-            if (keyWidget != nullptr) {
-                QKeySequence keySequence = keyWidget->keySequence();
-                QKeySequence defaultKeySequence = keyWidget->defaultKeySequence();
-                const QString settingsKey =
-                    QStringLiteral("Shortcuts/MainWindow-") + actionObjectName;
+        // Remove or store the setting for the shortcut if it differs from default
+        if (keySequence == defaultKeySequence) {
+            settings.remove(settingsKey);
+        } else {
+            settings.setValue(settingsKey, keySequence.toString());
+        }
+    }
 
-                // remove or store the setting for the shortcut if it's not default
-                if (keySequence == defaultKeySequence) {
-                    settings.remove(settingsKey);
-                } else {
-                    settings.setValue(settingsKey, keySequence.toString());
-                }
-            }
+    for (auto it = _globalShortcutWidgetMap.constBegin(); it != _globalShortcutWidgetMap.constEnd();
+         ++it) {
+        const QString &actionObjectName = it.key();
+        QKeySequenceWidget *globalWidget = it.value();
 
-            // Find the global shortcut widget for this action in the tree
-            auto *globalWidget = findGlobalKeySequenceWidget(actionObjectName);
+        if (globalWidget == nullptr) {
+            continue;
+        }
 
-            if (globalWidget != nullptr) {
-                QKeySequence keySequence = globalWidget->keySequence();
-                const QString settingsKey =
-                    QStringLiteral("GlobalShortcuts/MainWindow-") + actionObjectName;
+        QKeySequence keySequence = globalWidget->keySequence();
+        const QString settingsKey =
+            QStringLiteral("GlobalShortcuts/MainWindow-") + actionObjectName;
 
-                if (keySequence.isEmpty()) {
-                    settings.remove(settingsKey);
-                } else {
-                    settings.setValue(settingsKey, keySequence.toString());
-                }
-            }
+        if (keySequence.isEmpty()) {
+            settings.remove(settingsKey);
+        } else {
+            settings.setValue(settingsKey, keySequence.toString());
         }
     }
 }
@@ -848,26 +846,26 @@ QString SettingsDialog::getSelectedListWidgetValue(QListWidget *listWidget) {
 }
 
 /**
- * Forwards the connection test callback to the OwnCloudSettingsWidget
+ * Forwards the connection test callback to the CloudSettingsWidget
  */
 void SettingsDialog::connectTestCallback(bool appIsValid, QString appVersion, QString serverVersion,
                                          QString notesPathExistsText,
                                          QString connectionErrorMessage) {
-    ui->ownCloudSettingsWidget->connectTestCallback(
+    ui->cloudSettingsWidget->connectTestCallback(
         appIsValid, std::move(appVersion), std::move(serverVersion), std::move(notesPathExistsText),
         std::move(connectionErrorMessage));
 }
 
 /**
- * Forwards the OK label data to the OwnCloudSettingsWidget
+ * Forwards the OK label data to the CloudSettingsWidget
  */
 void SettingsDialog::setOKLabelData(int number, const QString &text, OKLabelStatus status) {
-    ui->ownCloudSettingsWidget->setOKLabelData(number, text, status);
+    ui->cloudSettingsWidget->setOKLabelData(number, text, status);
 }
 
 void SettingsDialog::refreshTodoCalendarList(const QList<CalDAVCalendarData> &items,
                                              bool forceReadCheckedState) {
-    ui->todoSettingsWidget->refreshTodoCalendarList(items, ui->ownCloudSettingsWidget->serverUrl(),
+    ui->todoSettingsWidget->refreshTodoCalendarList(items, ui->cloudSettingsWidget->serverUrl(),
                                                     forceReadCheckedState);
 }
 
@@ -900,7 +898,7 @@ void SettingsDialog::onLayoutStored(const QString &layoutUuid) {
 
 /**
  * Delegates the remote path list callback to the NoteFolderSettingsWidget.
- * Called by OwnCloudService::loadDirectory().
+ * Called by CloudService::loadDirectory().
  */
 void SettingsDialog::setNoteFolderRemotePathList(QStringList pathList) {
     ui->noteFolderSettingsWidget->setNoteFolderRemotePathList(pathList);
@@ -1120,8 +1118,13 @@ bool SettingsDialog::initializePage(int index) {
         case SettingsPages::ScriptingPage: {
             ui->scriptingSettingsWidget->initialize();
         } break;
-        case SettingsPages::OwnCloudPage: {
-            ui->ownCloudSettingsWidget->initialize();
+        case SettingsPages::ShortcutPage: {
+            // Lazy-load the shortcut settings tree only when the user navigates
+            // to the Shortcut page for the first time, not at every dialog open
+            loadShortcutSettings();
+        } break;
+        case SettingsPages::CloudPage: {
+            ui->cloudSettingsWidget->initialize();
         } break;
         case SettingsPages::AiPage: {
             ui->aiSettingsWidget->initialize();
@@ -1159,17 +1162,17 @@ void SettingsDialog::on_settingsStackedWidget_currentChanged(int index) {
 
     if (index == DebugPage) {
         ui->debugSettingsWidget->outputSettings();
-    } else if (index == OwnCloudPage) {
-        ui->ownCloudSettingsWidget->resetOKLabelData();
+    } else if (index == CloudPage) {
+        ui->cloudSettingsWidget->resetOKLabelData();
     } else if (index == AiPage) {
         ui->aiSettingsWidget->buildAiScriptingTreeWidget();
     }
 
-    // turn off the tasks page if no ownCloud settings are available
+    // turn off the tasks page if no cloud settings are available
     //    QTreeWidgetItem *todoItem =
     //    findSettingsTreeWidgetItemByPage(TodoPage); if (todoItem != nullptr)
     //    {
-    //        if (OwnCloudService::hasOwnCloudSettings()) {
+    //        if (CloudService::hasCloudSettings()) {
     //            todoItem->setDisabled(false);
     //            todoItem->setToolTip(0, "");
     //        } else {
@@ -1228,7 +1231,7 @@ void SettingsDialog::initMainSplitter() {
 void SettingsDialog::closeEvent(QCloseEvent *event) {
     Q_UNUSED(event)
 
-    ui->ownCloudSettingsWidget->cancelConnectionTest();
+    ui->cloudSettingsWidget->cancelConnectionTest();
 
     // make sure no settings get written after we got the
     // clearAppDataAndExit call

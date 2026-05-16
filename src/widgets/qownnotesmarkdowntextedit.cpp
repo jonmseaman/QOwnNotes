@@ -61,12 +61,12 @@
 #include "services/harperchecker.h"
 #endif
 #include "dialogs/markdowntabledialog.h"
+#include "services/cloudservice.h"
 #include "services/markdownlspclient.h"
 #include "services/markdownlspdocumenttracker.h"
 #include "services/markdownlspignoredrules.h"
 #include "services/nextclouddeckservice.h"
 #include "services/openaiservice.h"
-#include "services/owncloudservice.h"
 #include "services/scriptingservice.h"
 #include "services/settingsservice.h"
 #include "utils/urlhandler.h"
@@ -75,6 +75,44 @@
 namespace {
 constexpr int kFoldIndicatorPadding = 4;
 QHash<QString, QSet<QString>> s_foldedHeadingStateByNoteReference;
+
+static QChar accentForDeadKey(int key) {
+    switch (key) {
+        case Qt::Key_Dead_Acute:
+            return QChar(0x0301);
+        case Qt::Key_Dead_Grave:
+            return QChar(0x0300);
+        case Qt::Key_Dead_Circumflex:
+            return QChar(0x0302);
+        case Qt::Key_Dead_Diaeresis:
+            return QChar(0x0308);
+        case Qt::Key_Dead_Tilde:
+            return QChar(0x0303);
+        default:
+            return QChar();
+    }
+}
+
+static QChar spacingAccentForCombiningMark(QChar accent) {
+    switch (accent.unicode()) {
+        case 0x0300:
+            return QLatin1Char('`');
+        case 0x0301:
+            return QChar(0x00B4);
+        case 0x0302:
+            return QLatin1Char('^');
+        case 0x0303:
+            return QLatin1Char('~');
+        case 0x0308:
+            return QChar(0x00A8);
+        default:
+            return QChar();
+    }
+}
+
+static QString composeDeadKey(QChar accent, QChar character) {
+    return QString(character).append(accent).normalized(QString::NormalizationForm_C);
+}
 
 struct SetextHeadingUnderline {
     int level = 0;
@@ -588,7 +626,6 @@ QOwnNotesMarkdownTextEdit::QOwnNotesMarkdownTextEdit(QWidget *parent)
     connect(this, &QOwnNotesMarkdownTextEdit::customContextMenuRequested, this,
             &QOwnNotesMarkdownTextEdit::onContextMenu);
 
-    applyMarkdownLspSettings();
     refreshFoldingSidebar();
 }
 
@@ -1147,6 +1184,15 @@ void QOwnNotesMarkdownTextEdit::insertWikiLink() {
 }
 
 void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
+    if (isReadOnly() || !Utils::Misc::isNoteEditingAllowed()) {
+        if (openLinkAtCursorPosition()) {
+            MainWindow::instance()->showStatusBarMessage(
+                tr("An url was opened at the current cursor position"), QStringLiteral("📃"), 5000);
+        }
+
+        return;
+    }
+
     // attempt to toggle a checkbox at the cursor position
     if (Utils::Gui::toggleCheckBoxAtCursor(this)) {
         return;
@@ -1159,6 +1205,14 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
         Note::isWikiLinkSupportEnabled() &&
         wikiLinkAutoComplete(wikiResultList, wikiFilterText, wikiReplaceLength);
 
+    // Don't treat typing inside a wiki-link target as an activation request.
+    // This prevents completing the leading "[[" from opening or creating the note.
+    if (!wikiContextActive && openLinkAtCursorPosition()) {
+        MainWindow::instance()->showStatusBarMessage(
+            tr("An url was opened at the current cursor position"), QStringLiteral("📃"), 5000);
+        return;
+    }
+
     if (_markdownLspEnabled && _markdownLspClient && !_markdownLspUri.isEmpty()) {
         const QTextCursor cursor = textCursor();
         const int line = cursor.blockNumber();
@@ -1168,14 +1222,6 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
         if (_markdownLspCompletionRequestId >= 0) {
             return;
         }
-    }
-
-    // Don't treat typing inside a wiki-link target as an activation request.
-    // This prevents completing the leading "[[" from opening or creating the note.
-    if (!wikiContextActive && openLinkAtCursorPosition()) {
-        MainWindow::instance()->showStatusBarMessage(
-            tr("An url was opened at the current cursor position"), QStringLiteral("📃"), 5000);
-        return;
     }
 
     // attempt a Markdown table auto-format
@@ -1473,6 +1519,8 @@ void QOwnNotesMarkdownTextEdit::insertBlockQuote() {
 QTextCursor QOwnNotesMarkdownTextEdit::fullLineSelectionCursor() const {
     QTextCursor cursor = textCursor();
     if (!cursor.hasSelection()) {
+        cursor.movePosition(QTextCursor::StartOfBlock);
+        cursor.movePosition(QTextCursor::EndOfBlock, QTextCursor::KeepAnchor);
         return cursor;
     }
 
@@ -2051,7 +2099,7 @@ static QPixmap loadMarkdownImagePixmap(const QString &resolvedSource) {
         const QString base64 = resolvedSource.mid(markerPos + 8);
         image = QImage::fromData(QByteArray::fromBase64(base64.toLatin1()));
     } else if (resolvedSource.startsWith(QLatin1String("/core/preview"))) {
-        if (!OwnCloudService::isOwnCloudSupportEnabled()) {
+        if (!CloudService::isCloudSupportEnabled()) {
             failedImageCache.insert(resolvedSource);
             return QPixmap();
         }
@@ -2060,7 +2108,7 @@ static QPixmap loadMarkdownImagePixmap(const QString &resolvedSource) {
         const QString imgTag =
             QStringLiteral("<img src=\"") + resolvedSource + QStringLiteral("\" alt=\"img\"/>");
         const QString inlineTag =
-            OwnCloudService::instance()->nextcloudPreviewImageTagToInlineImageTag(imgTag, width);
+            CloudService::instance()->nextcloudPreviewImageTagToInlineImageTag(imgTag, width);
         const QRegularExpressionMatch srcMatch = srcRegex.match(inlineTag);
         if (!srcMatch.hasMatch()) {
             failedImageCache.insert(resolvedSource);
@@ -2445,7 +2493,9 @@ void QOwnNotesMarkdownTextEdit::updateSettings() {
     _centerCursor = settings.value(QStringLiteral("Editor/centerCursor")).toBool();
     QMarkdownTextEdit::updateSettings();
 
-    applyMarkdownLspSettings();
+    if (_markdownLspInitialized) {
+        applyMarkdownLspSettings();
+    }
 }
 
 void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
@@ -2600,7 +2650,7 @@ void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
         auto mainWindow = MainWindow::instance();
         auto *textEdit = new QOwnNotesMarkdownTextEdit(this);
         textEdit->setPlainText(mainWindow->selectedNoteTextEditText());
-        mainWindow->printTextDocument(textEdit->document());
+        mainWindow->printTextDocument(textEdit->document(), true);
     });
 
     // add the print selected text (preview) action
@@ -2638,7 +2688,7 @@ void QOwnNotesMarkdownTextEdit::onContextMenu(QPoint pos) {
         auto mainWindow = MainWindow::instance();
         auto *textEdit = new QOwnNotesMarkdownTextEdit(this);
         textEdit->setPlainText(mainWindow->selectedNoteTextEditText());
-        mainWindow->exportNoteAsPDF(textEdit->document());
+        mainWindow->exportNoteAsPDF(textEdit->document(), true);
     });
 
     // add the export selected text (preview) action
@@ -2822,7 +2872,8 @@ QMenu *QOwnNotesMarkdownTextEdit::markdownLspContextMenu(const QTextCursor &curs
     const int cursorLine = cursorAtMouse.blockNumber();
     const int cursorCol = cursorAtMouse.positionInBlock();
     const MarkdownLspClient::Diagnostic *match = nullptr;
-    for (const auto &diag : qAsConst(_markdownLspDiagnostics)) {
+    const auto &constMarkdownLspDiagnostics = _markdownLspDiagnostics;
+    for (const auto &diag : constMarkdownLspDiagnostics) {
         if (cursorLine >= diag.range.startLine && cursorLine <= diag.range.endLine) {
             // For single-line diagnostics also check column range
             if (diag.range.startLine == diag.range.endLine) {
@@ -2871,7 +2922,8 @@ QMenu *QOwnNotesMarkdownTextEdit::markdownLspContextMenu(const QTextCursor &curs
 
         if (receivedId == _markdownLspCodeActionRequestId) {
             _markdownLspCodeActionRequestId = -1;
-            for (const auto &action : qAsConst(receivedActions)) {
+            const auto &constReceivedActions = receivedActions;
+            for (const auto &action : constReceivedActions) {
                 lspMenu->addAction(action.title, this, [this, action]() {
                     if (action.hasEdits()) {
                         applyMarkdownLspTextEdits(action.edits);
@@ -3090,6 +3142,10 @@ bool QOwnNotesMarkdownTextEdit::eventFilter(QObject *obj, QEvent *event) {
             if ((keyEvent->key() == Qt::Key_Escape) && _searchWidget->isVisible()) {
                 _searchWidget->deactivate();
                 return true;
+            } else if ((keyEvent->key() == Qt::Key_R) &&
+                       keyEvent->modifiers().testFlag(Qt::ControlModifier) &&
+                       !Utils::Misc::isNoteEditingAllowed()) {
+                MainWindow::instance()->allowNoteEditing();
             } else if (!Utils::Misc::isNoteEditingAllowed()) {
                 const auto noModifierKeys = QList<int>()
                                             << Qt::Key_Return << Qt::Key_Enter << Qt::Key_Space
@@ -3098,7 +3154,18 @@ bool QOwnNotesMarkdownTextEdit::eventFilter(QObject *obj, QEvent *event) {
                                             << Qt::Key_BraceLeft << Qt::Key_BracketLeft
                                             << Qt::Key_Plus << Qt::Key_Comma << Qt::Key_Period;
 
-                const auto controlModifierKeys = QList<int>() << Qt::Key_V << Qt::Key_Space;
+                if ((keyEvent->key() == Qt::Key_Space) &&
+                    keyEvent->modifiers().testFlag(Qt::ControlModifier)) {
+                    if (openLinkAtCursorPosition()) {
+                        MainWindow::instance()->showStatusBarMessage(
+                            tr("An url was opened at the current cursor position"),
+                            QStringLiteral("📃"), 5000);
+                    }
+
+                    return true;
+                }
+
+                const auto controlModifierKeys = QList<int>() << Qt::Key_V;
 
                 // show notification if user tries to edit a note while
                 // note editing is turned off
@@ -3382,6 +3449,41 @@ void QOwnNotesMarkdownTextEdit::onAiAutocompleteTimeout(const QString &errorStri
  * Override keyPressEvent to handle Tab and Escape for autocomplete
  */
 void QOwnNotesMarkdownTextEdit::keyPressEvent(QKeyEvent *e) {
+    if (!isReadOnly()) {
+        const QChar deadKeyAccent = accentForDeadKey(e->key());
+        if (!deadKeyAccent.isNull() && e->text().isEmpty()) {
+            _pendingDeadKey = deadKeyAccent;
+            e->accept();
+            return;
+        }
+
+        if (!_pendingDeadKey.isNull()) {
+            if (e->key() == Qt::Key_Escape) {
+                _pendingDeadKey = QChar();
+            } else if (!(e->modifiers() &
+                         (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) &&
+                       e->text().size() == 1) {
+                const QChar accent = _pendingDeadKey;
+                _pendingDeadKey = QChar();
+
+                const QChar character = e->text().at(0);
+                const QString composed = composeDeadKey(accent, character);
+                QTextCursor cursor = textCursor();
+                cursor.insertText(composed.size() == 1
+                                      ? composed
+                                      : QString(spacingAccentForCombiningMark(accent)));
+                if (composed.size() != 1 && character != QLatin1Char(' ')) {
+                    cursor.insertText(e->text());
+                }
+                setTextCursor(cursor);
+                e->accept();
+                return;
+            }
+        }
+    } else {
+        _pendingDeadKey = QChar();
+    }
+
     // Handle Tab key to accept AI autocomplete suggestion
     if (e->key() == Qt::Key_Tab && !_aiAutocompleteSuggestion.isEmpty()) {
         acceptAiAutocompleteSuggestion();
@@ -3554,6 +3656,11 @@ void QOwnNotesMarkdownTextEdit::closeMarkdownLspDocument() {
     if (auto *h = dynamic_cast<QOwnNotesMarkdownHighlighter *>(highlighter())) {
         h->clearMarkdownLspDiagnostics();
     }
+}
+
+void QOwnNotesMarkdownTextEdit::initializeMarkdownLsp() {
+    _markdownLspInitialized = true;
+    applyMarkdownLspSettings();
 }
 
 void QOwnNotesMarkdownTextEdit::applyMarkdownLspSettings() {
@@ -3829,7 +3936,8 @@ void QOwnNotesMarkdownTextEdit::applyMarkdownLspDiagnostics(
         return;
     }
 
-    for (const int line : qAsConst(dirtyLines)) {
+    const QSet<int> &constDirtyLines = dirtyLines;
+    for (const int line : constDirtyLines) {
         const QTextBlock block = document()->findBlockByNumber(line);
         if (block.isValid()) {
             h->rehighlightBlock(block);

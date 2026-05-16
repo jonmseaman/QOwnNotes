@@ -1,7 +1,174 @@
 # QOwnNotes Changelog
 
+## 26.5.12
+
+- Added a native **Diff selected notes** note-list context menu action using a
+  new **External tools** option in **General settings** for the external diff
+  tool path, so the external diff tool can be configured and used directly in
+  the application (for [#3615](https://github.com/pbek/QOwnNotes/issues/3615))
+- Fixed internal note links such as `[the note](the-note.md)` and `<the-note.md>`
+  being highlighted as note links inside inline code spans and code blocks
+  (for [#3614](https://github.com/pbek/QOwnNotes/issues/3614))
+- When a note is renamed and backlinks are updated, Markdown link titles that
+  still match the old note title are now renamed too, for example
+  `[the note](the-note.md)` becomes `[the new note](the-new-note.md)`, while
+  other link titles are preserved (for [#705](https://github.com/pbek/QOwnNotes/issues/705))
+
+## 26.5.11
+
+- Fixed a startup SQL warning when creating a new note folder by migrating tag
+  dark colors without using the final tag schema before all database migration
+  steps have run (for [#3612](https://github.com/pbek/QOwnNotes/issues/3612))
+- Fixed creating tags after importing old settings and selecting a new note
+  folder by repairing incomplete note-folder database schemas and by no longer
+  marking note-folder database migrations as complete when a schema step fails;
+  first-run fetch queries now also return cleanly while database tables are still
+  being initialized instead of logging misleading `No query` warnings
+  (for [#3612](https://github.com/pbek/QOwnNotes/issues/3612))
+- Fixed a crash when starting QOwnNotes with `--clear-settings` by delaying disk
+  database cleanup until after the application object exists, avoiding early Qt
+  SQL access before `QCoreApplication` is initialized
+  (for [#3612](https://github.com/pbek/QOwnNotes/issues/3612))
+
+## 26.5.10
+
+- Added a `fetchUrlTitleHook(url)` scripting hook for the link dialog, allowing
+  scripts to provide a webpage title before QOwnNotes tries to fetch it itself;
+  the new hook is documented on the **Scripting hooks** documentation page with
+  a `kanboard-cli` example script with configurable Kanban URL prefixes
+  (for [#3611](https://github.com/pbek/QOwnNotes/issues/3611))
+- Added an **Insert checkbox list item** action to the **Edit / Insert** menu,
+  inserting `- [ ] ` at the beginning of the current text block after any
+  existing indentation, converting existing `- ` list items to checkbox list
+  items, toggling checkbox list items back to normal list items when triggered
+  again, and preserving the cursor position, with `Alt+L` as the default shortcut
+  (for [#3610](https://github.com/pbek/QOwnNotes/issues/3610))
+
+## 26.5.9
+
+- Fixed `Ctrl+Space` no longer opening URLs at the current cursor position in
+  the note editor when Markdown completions were available, and kept URL opening
+  available in read-only note mode because it does not edit the note
+  (for [#3609](https://github.com/pbek/QOwnNotes/issues/3609))
+- Fixed saving modified notes by synchronizing the visible note editor text before
+  autosave or `Ctrl+S` writes dirty notes to disk, preventing saves from being
+  skipped if the editor modification state gets out of sync
+  (for [#3513](https://github.com/pbek/QOwnNotes/issues/3513))
+- You can now update all script repository scripts automatically
+  (for [#3608](https://github.com/pbek/QOwnNotes/issues/3608))
+  - Added an **Update all** button to the **Script updates** dialog to install all
+    available updates for scripts from the script repository at once
+  - Added a new setting in the **Script updates** dialog to automatically install
+    available updates for scripts from the script repository during the startup
+    update check
+  - Added a **Debug options** checkbox to fake old installed script versions, making
+    it easier to test the script update dialog
+
+## 26.5.8
+
+- Fixed the **script repository dialog** not opening when triggered from the
+  script settings page via the _Add script_ button drop-down menu; the action
+  was connected using old-style `SIGNAL/SLOT` macros to a method not declared
+  as a slot, causing the connection to silently fail
+  (for [#3607](https://github.com/pbek/QOwnNotes/issues/3607))
+- Improved **settings dialog** open and close performance
+  (for [#3606](https://github.com/pbek/QOwnNotes/issues/3606))
+  - The shortcut settings tree is now built lazily — it is only constructed when
+    the user actually navigates to the _Shortcuts_ page, instead of on every
+    dialog open. This is the largest single win and makes the dialog open nearly
+    instantly in the common case where shortcuts are not being edited.
+  - `storeShortcutSettings()` now uses pre-built `QHash` lookup maps populated
+    during `loadShortcutSettings()`, replacing the previous O(n²) recursive tree
+    traversal with O(1) per-action widget lookups.
+  - The QML scripting engine is no longer restarted unconditionally on every OK
+    press; it is now only reloaded when the enabled state of at least one script
+    actually changed.
+
+## 26.5.7
+
+- Note text edit **List operations** now work on the current line when no text is
+  selected, so they can be used directly from the cursor position
+  (for [#3603](https://github.com/pbek/QOwnNotes/issues/3603))
+- Fixed the **Todo settings** cloud connection selector initialization and made
+  calendar backend changes debounce calendar-list reloads while ignoring stale
+  replies, preventing slow repeated backend switches and related crashes
+  (for [#3605](https://github.com/pbek/QOwnNotes/issues/3605))
+- Fixed a possible crash when script initialization triggered synchronous URL
+  downloads while settings/calendar actions requested another scripting engine
+  reload; nested reloads are now coalesced until the current reload finishes
+  (for [#3605](https://github.com/pbek/QOwnNotes/issues/3605))
+- Fetched webpage titles in the link dialog now preserve literal `<` and `>`
+  characters, so titles such as GitHub version bump pull requests are no longer
+  altered when used as link names (for [#3604](https://github.com/pbek/QOwnNotes/issues/3604))
+- Added more French, Spanish, Croatian, Korean translation (thank you, jd-develop,
+  AlejandroMoc, milotype, VenusGirl)
+
+## 26.5.6
+
+- Note folder **Subfolder visibility** selections now keep parent folders
+  selected with a partial check state when some or all subfolders are unchecked
+  individually, while checking a parent still selects its subfolders
+  (for [#3602](https://github.com/pbek/QOwnNotes/issues/3602))
+- Fixed a possible crash when opening the settings dialog by synchronizing access
+  to the shared settings cache while background tasks may read or write settings
+  (for [#3597](https://github.com/pbek/QOwnNotes/issues/3597))
+- Fixed dead-key accent composition in the note editor on Linux systems where Qt
+  delivered dead-key events without composed text, allowing Spanish accented
+  words such as `había` to be entered correctly (for [#3085](https://github.com/pbek/QOwnNotes/issues/3085))
+- Fixed duplicate light/dark mode prompts on application startup when the Linux
+  portal color scheme check and Qt color scheme fallback both detected the same
+  mismatch, and avoided applying the changed theme before main window startup
+  finished (for [#3578](https://github.com/pbek/QOwnNotes/issues/3578))
+- Fixed printing and exporting the **note text** to PDF while using a dark editor
+  color schema by rendering the exported text with the built-in Light editor
+  schema instead (for [#1524](https://github.com/pbek/QOwnNotes/issues/1524))
+
+## 26.5.5
+
+- Security tokens generated by `generateRandomString()` now use the operating
+  system random source via `QRandomGenerator::system()` on Qt 5.10+ and no
+  longer fall back to `qrand()` on older Qt versions (for [#3601](https://github.com/pbek/QOwnNotes/issues/3601))
+- Refactored internal ownCloud-specific class names, file names, and function
+  names for cloud integration to generic cloud naming, since the integration is
+  used with Nextcloud as well as ownCloud (for [#3600](https://github.com/pbek/QOwnNotes/issues/3600))
+- Improved cloud connection creation and deletion safeguards by asking for
+  confirmation before deleting a cloud connection and by starting new cloud
+  connections with empty settings instead of copying the previous connection
+  (for [#3599](https://github.com/pbek/QOwnNotes/issues/3599))
+- Keychain secrets are now deleted together with their references when removing
+  scripts, cloud connections, settings groups, or all settings, preventing stale
+  qtkeychain entries from being left behind (for [#3597](https://github.com/pbek/QOwnNotes/issues/3597))
+
+## 26.5.4
+
+- Fixed a startup crash when the Markdown LSP server initialized while qtkeychain
+  secret migration was running a nested event loop during main window setup;
+  Markdown LSP startup is now delayed until the status bar exists, fixing the
+  regression from the keychain changes (for [#3597](https://github.com/pbek/QOwnNotes/issues/3597))
+
+## 26.5.3
+
+- New note encryption now writes a portable versioned encryption envelope with
+  per-note salt and nonce metadata, derives keys with Botan PBKDF2-HMAC-SHA1,
+  and encrypts with AES-256-CBC plus HMAC authentication while keeping legacy
+  encrypted notes decryptable (for [#3598](https://github.com/pbek/QOwnNotes/issues/3598))
+- Secrets such as cloud connection passwords, proxy passwords, API keys, and
+  scripting secret settings are now stored in the operating system keychain via
+  qtkeychain instead of being obfuscated with SimpleCrypt in the settings file;
+  existing SimpleCrypt-backed secrets are migrated to the keychain automatically
+  when possible (for [#3597](https://github.com/pbek/QOwnNotes/issues/3597))
+
 ## 26.5.2
 
+- Pressing `Ctrl+R` in the **note text edit** now automatically turns off
+  read-only mode before opening the replace panel (for [#3596](https://github.com/pbek/QOwnNotes/issues/3596))
+- Fixed dark mode detection on **GNOME/Wayland** where Qt's `colorScheme()`
+  incorrectly reported light mode even when the system was in dark mode, by
+  preferring the D-Bus freedesktop portal query on Linux over Qt's built-in
+  detection (for [#3594](https://github.com/pbek/QOwnNotes/issues/3594))
+- Local scripts in the **Scripting** settings now read sibling `info.json`
+  metadata when the selected QML file matches the `script` entry, showing the
+  parsed version, authors, and description in the UI (for [#3595](https://github.com/pbek/QOwnNotes/issues/3595))
 - Added a new **Edit table** context menu item to the note text editor that opens a visual
   table editor dialog when right-clicking inside a Markdown table
   (for [#3593](https://github.com/pbek/QOwnNotes/issues/3593))

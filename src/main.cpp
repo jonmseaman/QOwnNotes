@@ -1,3 +1,4 @@
+#include <services/cryptoservice.h>
 #include <services/databaseservice.h>
 #include <services/metricsservice.h>
 #include <utils/cli.h>
@@ -103,7 +104,7 @@ inline void loadReleaseTranslations(QTranslator *translatorsRelease, const QStri
 }
 
 /**
- * Function for loading the translations on OS X
+ * Function for loading the translations on macOS
  */
 inline void loadMacTranslations(QTranslator &translatorOSX, QTranslator &translatorOSX2,
                                 QTranslator &translatorOSX3, QTranslator &translatorOSX4,
@@ -440,13 +441,14 @@ void tempLogMessageOutput(QtMsgType type, const QMessageLogContext &context, con
 
 inline void setAppProperties(QCoreApplication &app, const QString &release,
                              const QStringList &arguments, bool singleApp, bool snap, bool portable,
-                             const QString &action) {
+                             const QString &action, const QString &session) {
     app.setProperty("release", release);
     app.setProperty("portable", portable);
     if (singleApp) app.setProperty("singleApplication", true);
     app.setProperty("snap", snap);
     app.setProperty("arguments", arguments);
     app.setProperty("startupAction", action);
+    app.setProperty("session", session);
 }
 
 int main(int argc, char *argv[]) {
@@ -478,6 +480,7 @@ int main(int argc, char *argv[]) {
     QString appNameAdd = QString();
     QString session = QString();
     QString action = QString();
+    QStringList clearSettingsKeychainReferences;
 
 #ifdef QT_DEBUG
     appNameAdd = QStringLiteral("Debug");
@@ -539,7 +542,7 @@ int main(int argc, char *argv[]) {
         qputenv("QML_DISABLE_DISK_CACHE", "true");
     }
 
-    // don't log SSL warnings in releases on OS X
+    // don't log SSL warnings in releases on macOS
 #if defined(QT_NO_DEBUG) && defined(Q_OS_MAC)
     qputenv("QT_LOGGING_RULES", "qt.network.ssl.warning=false");
 #endif
@@ -588,14 +591,21 @@ int main(int argc, char *argv[]) {
     // clear the settings if a --clear-settings parameter was provided
     if (clearSettings) {
         QSettings settings;
+        clearSettingsKeychainReferences = CryptoService::keychainReferencesFromSettings(settings);
         settings.clear();
-
-        if (!portable) {
-            DatabaseService::removeDiskDatabase();
-        }
 
         qWarning("Your settings are now cleared!");
     }
+
+    auto clearDiskSettings = [&clearSettingsKeychainReferences, clearSettings, portable]() {
+        if (!clearSettings || portable) {
+            return;
+        }
+
+        clearSettingsKeychainReferences.append(CryptoService::keychainReferencesFromDiskDatabase());
+        clearSettingsKeychainReferences.removeDuplicates();
+        DatabaseService::removeDiskDatabase();
+    };
 
     QSettings settings;
 
@@ -653,6 +663,12 @@ int main(int argc, char *argv[]) {
         SingleApplication app(
             argc, argv, true,
             SingleApplication::Mode::User | SingleApplication::Mode::SecondaryNotification);
+        setAppProperties(app, release, arguments, true, snap, portable, action, session);
+        clearDiskSettings();
+
+        if (!clearSettingsKeychainReferences.isEmpty()) {
+            CryptoService::instance()->deleteSecrets(clearSettingsKeychainReferences);
+        }
 
         // quit app if it was already started
         if (app.isSecondary()) {
@@ -672,7 +688,6 @@ int main(int argc, char *argv[]) {
             return 0;
         }
 
-        setAppProperties(app, release, arguments, true, snap, portable, action);
 #ifndef QT_DEBUG
         loadReleaseTranslations(translatorsRelease, locale);
 #endif
@@ -733,7 +748,12 @@ int main(int argc, char *argv[]) {
         // use a normal QApplication if multiple instances of the app are
         // allowed
         QApplication app(argc, argv);
-        setAppProperties(app, release, arguments, false, snap, portable, action);
+        setAppProperties(app, release, arguments, false, snap, portable, action, session);
+        clearDiskSettings();
+
+        if (!clearSettingsKeychainReferences.isEmpty()) {
+            CryptoService::instance()->deleteSecrets(clearSettingsKeychainReferences);
+        }
 
 #ifndef QT_DEBUG
         loadReleaseTranslations(translatorsRelease, locale);

@@ -14,7 +14,36 @@
 
 #include "settingsservice.h"
 
+#include <services/cryptoservice.h>
+
+#include <QCoreApplication>
 #include <QDebug>
+#include <QMutexLocker>
+
+namespace {
+QStringList keychainReferencesForRemoval(const QSettings &settings, const QString &key) {
+    QStringList references;
+    const QString value = settings.value(key).toString();
+
+    if (CryptoService::isKeychainReference(value)) {
+        references.append(value);
+    }
+
+    const QString prefix = key + QLatin1Char('/');
+    for (const QString &childKey : settings.allKeys()) {
+        if (!childKey.startsWith(prefix)) {
+            continue;
+        }
+
+        const QString childValue = settings.value(childKey).toString();
+        if (CryptoService::isKeychainReference(childValue) && !references.contains(childValue)) {
+            references.append(childValue);
+        }
+    }
+
+    return references;
+}
+}    // namespace
 
 SettingsService::SettingsService(QObject *parent) : QObject(parent), m_settings() {}
 
@@ -28,8 +57,14 @@ QHash<QString, QVariant> *SettingsService::cache() {
     return &cache;
 }
 
+QMutex *SettingsService::cacheMutex() {
+    static QMutex mutex;
+    return &mutex;
+}
+
 QVariant SettingsService::value(const QString &key, const QVariant &defaultValue) const {
     const QString fullKey = getFullKey(key);
+    QMutexLocker locker(cacheMutex());
 
     if (!cache()->contains(fullKey)) {
         // We are using "key" instead of "fullKey", because QSettings is already
@@ -42,7 +77,10 @@ QVariant SettingsService::value(const QString &key, const QVariant &defaultValue
 
 void SettingsService::setValue(const QString &key, const QVariant &value) {
     const QString fullKey = getFullKey(key);
-    cache()->insert(fullKey, value);
+    {
+        QMutexLocker locker(cacheMutex());
+        cache()->insert(fullKey, value);
+    }
 
     // We are using "key" instead of "fullKey", because QSettings is already
     // in the group if there was one
@@ -51,10 +89,14 @@ void SettingsService::setValue(const QString &key, const QVariant &value) {
 
 void SettingsService::remove(const QString &key) {
     const QString fullKey = getFullKey(key);
+    QStringList keychainReferences;
 
     // Handle group removal
     if (key.isEmpty() && !m_group.isEmpty()) {
+        keychainReferences = CryptoService::keychainReferencesFromSettings(m_settings);
+
         // Remove all keys in group in QHash cache
+        QMutexLocker locker(cacheMutex());
         for (auto it = cache()->begin(); it != cache()->end();) {
             if (it.key().startsWith(fullKey)) {
                 it = cache()->erase(it);
@@ -66,17 +108,25 @@ void SettingsService::remove(const QString &key) {
         // Remove all keys in group in QSettings
         m_settings.remove(QLatin1String(""));
     } else {
+        keychainReferences = keychainReferencesForRemoval(m_settings, key);
+
         // Remove single key
+        QMutexLocker locker(cacheMutex());
         cache()->remove(fullKey);
 
         // We are using "key" instead of "fullKey", because QSettings is already
         // in the group if there was one
         m_settings.remove(key);
     }
+
+    if (!keychainReferences.isEmpty() && qApp != nullptr) {
+        CryptoService::instance()->deleteSecrets(keychainReferences);
+    }
 }
 
 bool SettingsService::contains(const QString &key) const {
     const QString fullKey = getFullKey(key);
+    QMutexLocker locker(cacheMutex());
 
     // For m_settings we are using "key" instead of "fullKey", because QSettings
     // is already in the group if there was one
@@ -98,13 +148,23 @@ void SettingsService::sync() { m_settings.sync(); }
 QStringList SettingsService::allKeys() const { return m_settings.allKeys(); }
 
 void SettingsService::clear() {
-    cache()->clear();
+    const QStringList keychainReferences =
+        CryptoService::keychainReferencesFromSettings(m_settings);
+
+    {
+        QMutexLocker locker(cacheMutex());
+        cache()->clear();
+    }
     m_settings.clear();
     m_settings.sync();
     m_group.clear();
     m_arrayStack.clear();
     m_arrayIndex = 0;
     m_arrayPrefix.clear();
+
+    if (!keychainReferences.isEmpty() && qApp != nullptr) {
+        CryptoService::instance()->deleteSecrets(keychainReferences);
+    }
 }
 
 void SettingsService::beginGroup(const QString &prefix) {

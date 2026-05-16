@@ -42,6 +42,7 @@ class ScriptingService : public QObject {
     void initComponents();
     QString callInsertMediaHook(QFile *file, QString markdownText);
     QString callInsertAttachmentHook(QFile *file, QString markdownText);
+    QString callFetchUrlTitleHook(const QString &url) const;
     void callLayoutSwitchedHook(const QString &oldUuid, const QString &newUuid);
     QT_DEPRECATED_X("Use callLayoutSwitchedHook() instead")
     void callWorkspaceSwitchedHook(const QString &oldUuid, const QString &newUuid);
@@ -221,6 +222,9 @@ class ScriptingService : public QObject {
     QHash<int, QList<QVariant>> _settingsVariables;
     QVector<QOwnNotesMarkdownHighlighter::ScriptingHighlightingRule> _highlightingRules;
     bool _highlightingHookExists = false;
+    bool _isInitializingComponents = false;
+    bool _isReloadingEngine = false;
+    bool _reloadEngineRequested = false;
     bool methodExistsForObject(QObject *object, const QString &method) const;
     QString callNoteToMarkdownHtmlHookForObject(ScriptComponent *scriptComponent, Note *note,
                                                 const QString &html, const bool forExport);

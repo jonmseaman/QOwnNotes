@@ -21,6 +21,7 @@
 
 #include "entities/notefolder.h"
 #include "mainwindow.h"
+#include "services/scriptingservice.h"
 #include "services/settingsservice.h"
 #include "ui_linkdialog.h"
 #include "widgets/navigationwidget.h"
@@ -226,6 +227,8 @@ QString LinkDialog::getURL() const {
     return url;
 }
 
+void LinkDialog::setURL(const QString &text) { ui->urlEdit->setText(text); }
+
 QString LinkDialog::getLinkName() const { return ui->nameLineEdit->text().trimmed(); }
 
 void LinkDialog::setLinkName(const QString &text) { ui->nameLineEdit->setText(text); }
@@ -333,8 +336,6 @@ QString LinkDialog::getTitleFromHtml(const QString &html) {
     // replace some other characters we don't want
     title.replace(QStringLiteral("["), QStringLiteral("("))
         .replace(QStringLiteral("]"), QStringLiteral(")"))
-        .replace(QStringLiteral("<"), QStringLiteral("("))
-        .replace(QStringLiteral(">"), QStringLiteral(")"))
         .replace(QStringLiteral("&#8211;"), QStringLiteral("-"))
         .replace(QStringLiteral("&#124;"), QStringLiteral("-"))
         .replace(QStringLiteral("&#038;"), QStringLiteral("&"))
@@ -573,6 +574,14 @@ void LinkDialog::on_tabWidget_currentChanged(int index) {
 }
 
 void LinkDialog::startTitleFetchRequest(const QUrl &url) {
+    const QString title =
+        ScriptingService::instance()->callFetchUrlTitleHook(url.toString(QUrl::FullyEncoded));
+
+    if (!title.isEmpty()) {
+        setLinkName(title);
+        return;
+    }
+
     ui->downloadProgressBar->show();
     QNetworkRequest networkRequest(url);
 

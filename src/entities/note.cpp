@@ -1,7 +1,7 @@
 #include "entities/note.h"
 
 #include <botanwrapper.h>
-#include <services/owncloudservice.h>
+#include <services/cloudservice.h>
 #include <services/scriptingservice.h>
 #include <utils/gui.h>
 #include <utils/misc.h>
@@ -70,6 +70,24 @@ struct ParsedWikiLink {
     int length = 0;
     WikiLinkParts parts;
 };
+
+struct NoteEncryptionEnvelope {
+    bool isV2 = false;
+    QString cipherText;
+    QString kdf;
+    QString cipher;
+    QString salt;
+    QString nonce;
+    QString mac;
+    size_t iterations = 0;
+};
+
+constexpr int NoteEncryptionVersion = 2;
+constexpr int NoteEncryptionSaltBytes = 32;
+constexpr int NoteEncryptionNonceBytes = 16;
+constexpr size_t NoteEncryptionKdfIterations = 300000;
+const auto NoteEncryptionKdf = QStringLiteral("PBKDF2-HMAC-SHA1");
+const auto NoteEncryptionCipher = QStringLiteral("AES-256-CBC-PKCS7-HMAC-SHA1");
 
 static const QRegularExpression &wikiLinkRegex() {
     static const QRegularExpression regex(QStringLiteral(R"(\[\[([^\[\]]+?)\]\])"));
@@ -317,6 +335,79 @@ static QString postProcessWikiLinksHtml(QString html, int currentNoteSubFolderId
 
     return html;
 }
+
+static NoteEncryptionEnvelope parseNoteEncryptionEnvelope(const QString &payload) {
+    NoteEncryptionEnvelope envelope;
+    envelope.cipherText = payload.trimmed();
+
+    const QStringList lines = payload.trimmed().split(QChar('\n'));
+    if (lines.isEmpty() || lines.constFirst().trimmed() != QStringLiteral("qon-crypto: 2")) {
+        return envelope;
+    }
+
+    QHash<QString, QString> metadata;
+    int cipherTextLine = -1;
+    for (int i = 0; i < lines.count(); ++i) {
+        const QString line = lines.at(i).trimmed();
+        if (line.isEmpty()) {
+            cipherTextLine = i + 1;
+            break;
+        }
+
+        const int separatorIndex = line.indexOf(QChar(':'));
+        if (separatorIndex <= 0) {
+            return envelope;
+        }
+
+        metadata.insert(line.left(separatorIndex).trimmed(),
+                        line.mid(separatorIndex + 1).trimmed());
+    }
+
+    if (cipherTextLine < 0 || cipherTextLine >= lines.count()) {
+        return envelope;
+    }
+
+    bool iterationsOk = false;
+    const size_t iterations =
+        metadata.value(QStringLiteral("kdf-iterations")).toULongLong(&iterationsOk);
+    const QString cipherText = lines.mid(cipherTextLine).join(QChar('\n')).trimmed();
+
+    if (!iterationsOk ||
+        metadata.value(QStringLiteral("qon-crypto")) != QString::number(NoteEncryptionVersion) ||
+        metadata.value(QStringLiteral("kdf")) != NoteEncryptionKdf ||
+        metadata.value(QStringLiteral("cipher")) != NoteEncryptionCipher ||
+        metadata.value(QStringLiteral("salt")).isEmpty() ||
+        metadata.value(QStringLiteral("nonce")).isEmpty() ||
+        metadata.value(QStringLiteral("mac")).isEmpty() || cipherText.isEmpty()) {
+        return envelope;
+    }
+
+    envelope.isV2 = true;
+    envelope.cipherText = cipherText;
+    envelope.kdf = metadata.value(QStringLiteral("kdf"));
+    envelope.cipher = metadata.value(QStringLiteral("cipher"));
+    envelope.salt = metadata.value(QStringLiteral("salt"));
+    envelope.nonce = metadata.value(QStringLiteral("nonce"));
+    envelope.mac = metadata.value(QStringLiteral("mac"));
+    envelope.iterations = iterations;
+    return envelope;
+}
+
+static QString buildNoteEncryptionEnvelope(const QString &cipherText, const QString &salt,
+                                           const QString &nonce, const QString &mac) {
+    return QStringLiteral(
+               "qon-crypto: %1\n"
+               "kdf: %2\n"
+               "kdf-iterations: %3\n"
+               "salt: %4\n"
+               "cipher: %5\n"
+               "nonce: %6\n"
+               "mac: %7\n\n"
+               "%8")
+        .arg(QString::number(NoteEncryptionVersion), NoteEncryptionKdf,
+             QString::number(NoteEncryptionKdfIterations), salt, NoteEncryptionCipher, nonce, mac,
+             cipherText);
+}
 }    // namespace
 
 int Note::getId() const { return this->_id; }
@@ -399,18 +490,18 @@ void Note::setSharePermissions(unsigned int permissions) { this->_sharePermissio
  * @return the Nextcloud file link URL, empty if not available
  */
 QString Note::getNextcloudFileLink() const {
-    if (!OwnCloudService::isOwnCloudSupportEnabled()) {
+    if (!CloudService::isCloudSupportEnabled()) {
         return {};
     }
 
     // Get the OwnCloud service instance
-    OwnCloudService *ownCloudService = OwnCloudService::instance();
-    if (ownCloudService == nullptr) {
+    CloudService *cloudService = CloudService::instance();
+    if (cloudService == nullptr) {
         return {};
     }
 
     // Fetch the file ID from Nextcloud
-    QString fileId = ownCloudService->fetchNoteFileId(*this);
+    QString fileId = cloudService->fetchNoteFileId(*this);
     if (fileId.isEmpty()) {
         return {};
     }
@@ -447,18 +538,18 @@ QString Note::getNextcloudFileLink() const {
  * @return the Nextcloud Notes link URL, empty if not available
  */
 QString Note::getNextcloudNotesLink() const {
-    if (!OwnCloudService::isOwnCloudSupportEnabled()) {
+    if (!CloudService::isCloudSupportEnabled()) {
         return {};
     }
 
     // Get the OwnCloud service instance
-    OwnCloudService *ownCloudService = OwnCloudService::instance();
-    if (ownCloudService == nullptr) {
+    CloudService *cloudService = CloudService::instance();
+    if (cloudService == nullptr) {
         return {};
     }
 
     // Fetch the file ID from Nextcloud
-    QString fileId = ownCloudService->fetchNoteFileId(*this);
+    QString fileId = cloudService->fetchNoteFileId(*this);
     if (fileId.isEmpty()) {
         return {};
     }
@@ -1292,9 +1383,13 @@ Note Note::fillFromQuery(const QSqlQuery &query) {
 
 QVector<Note> Note::fetchAll(int limit, const QString &connectionName) {
     const QSqlDatabase db = QSqlDatabase::database(connectionName);
-    QSqlQuery query(db);
-
     QVector<Note> noteList;
+
+    if (!db.tables().contains(QStringLiteral("note"), Qt::CaseInsensitive)) {
+        return noteList;
+    }
+
+    QSqlQuery query(db);
 
     const QString sql = limit >= 0
                             ? QStringLiteral(
@@ -2404,7 +2499,7 @@ bool Note::handleNoteTextFileName() {
         // update the first line of the note text
         // TODO(pbek): UI has to be updated too then!
         // update: we now try not to change the first line of the note,
-        //         this doesn't seem to trouble ownCloud / Nextcloud notes
+        //         this doesn't seem to trouble Nextcloud / ownCloud notes
         //         a lot, but it renames the notes to its own liking
         //        noteTextLines[0] = name;
         //        this->noteText = noteTextLines.join("\n");
@@ -3780,7 +3875,7 @@ QString Note::textToMarkdownHtml(QString str, const QString &notesPath, int maxI
     // transform remote preview image tags
     Utils::Misc::transformRemotePreviewImages(result, maxImageWidth, externalImageHash());
 
-    if (OwnCloudService::isOwnCloudSupportEnabled()) {
+    if (CloudService::isCloudSupportEnabled()) {
         // transform Nextcloud preview image tags
         Utils::Misc::transformNextcloudPreviewImages(result, maxImageWidth, externalImageHash());
     }
@@ -4211,8 +4306,14 @@ QString Note::encryptNoteText() {
         // encrypt the text
         BotanWrapper botanWrapper;
         botanWrapper.setPassword(_cryptoPassword);
-        botanWrapper.setSalt(QStringLiteral(BOTAN_SALT));
-        encryptedText = botanWrapper.Encrypt(text);
+        const QString salt = BotanWrapper::randomBytesBase64(NoteEncryptionSaltBytes);
+        const QString nonce = BotanWrapper::randomBytesBase64(NoteEncryptionNonceBytes);
+        QString mac;
+        encryptedText =
+            botanWrapper.EncryptV2(text, salt, nonce, NoteEncryptionKdfIterations, &mac);
+        if (!encryptedText.isEmpty()) {
+            encryptedText = buildNoteEncryptionEnvelope(encryptedText, salt, nonce, mac);
+        }
 
         //    SimpleCrypt *crypto = new
         //    SimpleCrypt(static_cast<quint64>(cryptoKey)); QString
@@ -4292,27 +4393,7 @@ bool Note::canDecryptNoteText() const {
         return false;
     }
 
-    // check if we have an external decryption method
-    QString decryptedNoteText =
-        ScriptingService::instance()->callEncryptionHook(encryptedNoteText, _cryptoPassword, true);
-
-    // check if a hook changed the text
-    if (decryptedNoteText.isEmpty()) {
-        // decrypt the note text with Botan
-        BotanWrapper botanWrapper;
-        botanWrapper.setPassword(_cryptoPassword);
-        botanWrapper.setSalt(QStringLiteral(BOTAN_SALT));
-        decryptedNoteText = botanWrapper.Decrypt(encryptedNoteText);
-
-        // fallback to SimpleCrypt
-        if (decryptedNoteText.isEmpty()) {
-            auto *crypto = new SimpleCrypt(static_cast<quint64>(_cryptoKey));
-            decryptedNoteText = crypto->decryptToString(encryptedNoteText);
-            delete crypto;
-        }
-    }
-
-    return !decryptedNoteText.isEmpty();
+    return !decryptEncryptedNoteText(encryptedNoteText).isEmpty();
 }
 
 /**
@@ -4354,24 +4435,7 @@ QString Note::getDecryptedNoteText(
     const QString &encryptedNoteText) const {    // check if we have an external decryption method
     QString noteText = getNoteText();
 
-    QString decryptedNoteText =
-        ScriptingService::instance()->callEncryptionHook(encryptedNoteText, _cryptoPassword, true);
-
-    // Check if a hook changed the text
-    if (decryptedNoteText.isEmpty()) {
-        // Decrypt the note text
-        BotanWrapper botanWrapper;
-        botanWrapper.setPassword(_cryptoPassword);
-        botanWrapper.setSalt(QStringLiteral(BOTAN_SALT));
-        decryptedNoteText = botanWrapper.Decrypt(encryptedNoteText);
-
-        // Fallback to SimpleCrypt
-        if (decryptedNoteText.isEmpty()) {
-            auto *crypto = new SimpleCrypt(static_cast<quint64>(_cryptoKey));
-            decryptedNoteText = crypto->decryptToString(encryptedNoteText);
-            delete crypto;
-        }
-    }
+    const QString decryptedNoteText = decryptEncryptedNoteText(encryptedNoteText);
 
     if (decryptedNoteText.isEmpty()) {
         return noteText;
@@ -4383,6 +4447,37 @@ QString Note::getDecryptedNoteText(
     // Replace the encrypted text with the decrypted text
     noteText.replace(re, decryptedNoteText);
     return noteText;
+}
+
+QString Note::decryptEncryptedNoteText(const QString &encryptedNoteText) const {
+    QString decryptedNoteText =
+        ScriptingService::instance()->callEncryptionHook(encryptedNoteText, _cryptoPassword, true);
+
+    if (!decryptedNoteText.isEmpty()) {
+        return decryptedNoteText;
+    }
+
+    const NoteEncryptionEnvelope envelope = parseNoteEncryptionEnvelope(encryptedNoteText);
+    BotanWrapper botanWrapper;
+    botanWrapper.setPassword(_cryptoPassword);
+
+    if (envelope.isV2) {
+        return botanWrapper.DecryptV2(envelope.cipherText, envelope.salt, envelope.nonce,
+                                      envelope.mac, envelope.iterations);
+    }
+
+    botanWrapper.setSalt(QStringLiteral(BOTAN_SALT));
+    decryptedNoteText = botanWrapper.Decrypt(encryptedNoteText);
+
+    if (!decryptedNoteText.isEmpty()) {
+        return decryptedNoteText;
+    }
+
+    auto *crypto = new SimpleCrypt(static_cast<quint64>(_cryptoKey));
+    decryptedNoteText = crypto->decryptToString(encryptedNoteText);
+    delete crypto;
+
+    return decryptedNoteText;
 }
 
 /**
@@ -5142,6 +5237,39 @@ bool Note::handleBacklinkedNotesAfterMoving(const Note &oldNote, const QVector<i
     const int noteCount = noteIdList.count();
     const QString oldUrl = getNoteURL(oldNote.getName());
     const QString newUrl = getNoteURL(_name);
+    QString oldLinkTitle = oldNote.getName();
+    QString newLinkTitle = _name;
+    oldLinkTitle.remove(QStringLiteral("]"));
+    newLinkTitle.remove(QStringLiteral("]"));
+
+    const auto replaceMarkdownLinksToTarget = [&oldLinkTitle, &newLinkTitle](
+                                                  QString &text, const QString &oldTarget,
+                                                  const QString &newTarget) {
+        const QRegularExpression markdownLinkRegex(QStringLiteral(R"(\[([^\[\]]+?)\]\()") +
+                                                   QRegularExpression::escape(oldTarget) +
+                                                   QStringLiteral(R"((#[^\)]*)?\))"));
+        QRegularExpressionMatchIterator iterator = markdownLinkRegex.globalMatch(text);
+        QVector<QPair<int, QString>> replacements;
+
+        while (iterator.hasNext()) {
+            const QRegularExpressionMatch match = iterator.next();
+            QString linkTitle = match.captured(1);
+
+            if (linkTitle == oldLinkTitle) {
+                linkTitle = newLinkTitle;
+            }
+
+            replacements.append(
+                {match.capturedStart(0), QStringLiteral("[") + linkTitle + QStringLiteral("](") +
+                                             newTarget + match.captured(2) + QStringLiteral(")")});
+        }
+
+        for (int i = replacements.count() - 1; i >= 0; --i) {
+            const int start = replacements.at(i).first;
+            const int length = markdownLinkRegex.match(text, start).capturedLength(0);
+            text.replace(start, length, replacements.at(i).second);
+        }
+    };
 
     if (Utils::Gui::questionNoSkipOverride(
             nullptr, QObject::tr("Note file path changed"),
@@ -5167,6 +5295,7 @@ bool Note::handleBacklinkedNotesAfterMoving(const Note &oldNote, const QVector<i
             // replace legacy links with note://
             text.replace(QStringLiteral("<") + oldUrl + QStringLiteral(">"),
                          QStringLiteral("<") + newUrl + QStringLiteral(">"));
+            replaceMarkdownLinksToTarget(text, oldUrl, newUrl);
             text.replace(QStringLiteral("](") + oldUrl + QStringLiteral(")"),
                          QStringLiteral("](") + newUrl + QStringLiteral(")"));
 
@@ -5176,6 +5305,7 @@ bool Note::handleBacklinkedNotesAfterMoving(const Note &oldNote, const QVector<i
             if (!oldUrl.contains(QLatin1String("@"))) {
                 text.replace(QStringLiteral("<") + oldUrl + QStringLiteral("@>"),
                              QStringLiteral("<") + newUrl + QStringLiteral(">"));
+                replaceMarkdownLinksToTarget(text, oldUrl + QStringLiteral("@"), newUrl);
                 text.replace(QStringLiteral("](") + oldUrl + QStringLiteral("@)"),
                              QStringLiteral("](") + newUrl + QStringLiteral(")"));
             }
@@ -5189,6 +5319,7 @@ bool Note::handleBacklinkedNotesAfterMoving(const Note &oldNote, const QVector<i
             //
             text.replace(QStringLiteral("<") + oldNoteRelativeFilePath + QStringLiteral(">"),
                          QStringLiteral("<") + relativeFilePath + QStringLiteral(">"));
+            replaceMarkdownLinksToTarget(text, oldNoteRelativeFilePath, relativeFilePath);
             text.replace(QStringLiteral("](") + oldNoteRelativeFilePath + QStringLiteral(")"),
                          QStringLiteral("](") + relativeFilePath + QStringLiteral(")"));
             text.replace(QStringLiteral("](") + oldNoteRelativeFilePath + QStringLiteral("#"),
@@ -5200,6 +5331,7 @@ bool Note::handleBacklinkedNotesAfterMoving(const Note &oldNote, const QVector<i
             oldNoteRelativeFilePath = urlEncodeNoteUrl(oldNoteRelativeFilePath);
             text.replace(QStringLiteral("<") + oldNoteRelativeFilePath + QStringLiteral(">"),
                          QStringLiteral("<") + relativeFilePath + QStringLiteral(">"));
+            replaceMarkdownLinksToTarget(text, oldNoteRelativeFilePath, relativeFilePath);
             text.replace(QStringLiteral("](") + oldNoteRelativeFilePath + QStringLiteral(")"),
                          QStringLiteral("](") + relativeFilePath + QStringLiteral(")"));
             text.replace(QStringLiteral("](") + oldNoteRelativeFilePath + QStringLiteral("#"),

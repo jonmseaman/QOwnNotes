@@ -346,7 +346,7 @@ class MainWindow : public QMainWindow {
 
     void notesWereModified(const QString &str);
 
-    void on_actionSet_ownCloud_Folder_triggered();
+    void on_actionSet_Cloud_Folder_triggered();
 
     void on_searchLineEdit_textChanged(const QString &arg1);
 
@@ -466,6 +466,8 @@ class MainWindow : public QMainWindow {
     void on_actionOpen_note_bookmark_dialog_triggered();
 
     void on_actionInsert_code_block_triggered();
+
+    void on_actionInsert_checkbox_list_item_triggered();
 
     void on_actionNext_note_triggered();
 
@@ -919,8 +921,9 @@ class MainWindow : public QMainWindow {
 
    public:
     /** export / print **/
-    void printTextDocument(QTextDocument *textDocument);
-    void exportNoteAsPDF(QTextDocument *doc);
+    void printTextDocument(QTextDocument *textDocument,
+                           bool useLightEditorSchemaForDarkSchema = false);
+    void exportNoteAsPDF(QTextDocument *doc, bool useLightEditorSchemaForDarkSchema = false);
 
     int getMaxImageWidth() const;
 
@@ -1068,7 +1071,7 @@ class MainWindow : public QMainWindow {
 
     bool buildNotesIndex(int noteSubFolderId = 0, bool forceRebuild = false);
 
-    QString selectOwnCloudNotesFolder();
+    QString selectCloudNotesFolder();
 
     void removeCurrentNote();
 

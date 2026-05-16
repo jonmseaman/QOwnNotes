@@ -39,7 +39,6 @@ class NoteFolderSettingsWidget : public QWidget {
 
     void setNoteFolderRemotePathList(QStringList pathList);
     void populateCloudConnectionComboBox(const QList<CloudConnection> &connections, int selectedId);
-    void replaceOwnCloudText();
 
    signals:
     void storeSettingsRequested();
@@ -57,17 +56,19 @@ class NoteFolderSettingsWidget : public QWidget {
     void on_noteFolderRemotePathTreeWidget_currentItemChanged(QTreeWidgetItem *current,
                                                               QTreeWidgetItem *previous);
     void on_noteFolderCloudConnectionComboBox_currentIndexChanged(int index);
-    void on_useOwnCloudPathButton_clicked();
+    void on_useCloudPathButton_clicked();
     void on_noteFolderShowSubfoldersCheckBox_toggled(bool checked);
     void on_noteFolderAllSubfoldersCheckBox_toggled(bool checked);
     void on_allowDifferentNoteFileNameCheckBox_toggled(bool checked);
     void on_noteFolderGitCommitCheckBox_toggled(bool checked);
+    void onSubfolderTreeItemChanged(QTreeWidgetItem *item, int column);
     void saveSubfolderTreeSelection();
 
    private:
     Ui::NoteFolderSettingsWidget *ui;
     NoteFolder _selectedNoteFolder;
     QStatusBar *_noteFolderRemotePathTreeStatusBar = nullptr;
+    bool _updatingSubfolderTreeCheckStates = false;
 
     void setNoteFolderRemotePathTreeWidgetFrameVisibility(bool visible);
     void addPathToNoteFolderRemotePathTreeWidget(QTreeWidgetItem *parent, const QString &path);
@@ -80,5 +81,8 @@ class NoteFolderSettingsWidget : public QWidget {
                                       const QString &relativePath);
     void applySubfolderTreeCheckStates(QTreeWidget *tree, const QStringList &excludedPaths);
     void applyCheckStateToItem(QTreeWidgetItem *item, const QStringList &excludedPaths);
+    void setSubfolderTreeChildrenCheckState(QTreeWidgetItem *item, Qt::CheckState checkState);
+    void updateSubfolderTreeParentCheckStates(QTreeWidgetItem *item);
+    Qt::CheckState subfolderTreeParentCheckState(QTreeWidgetItem *item);
     void collectExcludedSubfolderPaths(QTreeWidgetItem *item, QStringList &excludedPaths);
 };

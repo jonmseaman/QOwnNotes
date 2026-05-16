@@ -92,6 +92,7 @@
 #include <QShortcut>
 #include <QSystemTrayIcon>
 #include <QTemporaryFile>
+#include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocumentFragment>
 #include <QTextLength>
@@ -128,11 +129,11 @@
 #ifdef LANGUAGETOOL_ENABLED
 #include "services/languagetoolchecker.h"
 #endif
+#include "services/cloudservice.h"
 #include "services/mcpservice.h"
 #include "services/metricsservice.h"
 #include "services/nextclouddeckservice.h"
 #include "services/openaiservice.h"
-#include "services/owncloudservice.h"
 #include "services/settingsservice.h"
 #include "services/updateservice.h"
 #include "services/webappclientservice.h"
@@ -185,6 +186,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui = new Ui::MainWindow;
 
     ui->setupUi(this);
+    ui->noteTextEdit->initializeMarkdownLsp();
+    ui->encryptedNoteTextEdit->initializeMarkdownLsp();
 
     _logWidget = new LogWidget(this);
     connect(this, &MainWindow::log, _logWidget, &LogWidget::log);
@@ -511,11 +514,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // initialize the editor soft wrapping
     initEditorSoftWrap();
 
-    // check if user has set ownCloud settings
+    // check if user has set cloud settings
     MetricsService::instance()->sendEventIfEnabled(
-        QStringLiteral("app/has-owncloud-settings"), QStringLiteral("app"),
-        QStringLiteral("has owncloud settings"),
-        OwnCloudService::hasOwnCloudSettings() ? QStringLiteral("yes") : QStringLiteral("no"));
+        QStringLiteral("app/has-cloud-settings"), QStringLiteral("app"),
+        QStringLiteral("has cloud settings"),
+        CloudService::hasCloudSettings() ? QStringLiteral("yes") : QStringLiteral("no"));
 
     // send an event for counting the editor color schemes
     const int schemaCount =
@@ -895,13 +898,13 @@ void MainWindow::initFakeVim(QOwnNotesMarkdownTextEdit *noteTextEdit) {
  * Attempts to check the api app version
  */
 void MainWindow::startAppVersionTest() {
-    if (!OwnCloudService::hasOwnCloudSettings() &&
+    if (!CloudService::hasCloudSettings() &&
         CloudConnection::currentCloudConnection().getAppQOwnNotesAPIEnabled()) {
         return;
     }
 
-    OwnCloudService *ownCloud = OwnCloudService::instance();
-    ownCloud->startAppVersionTest();
+    CloudService *cloud = CloudService::instance();
+    cloud->startAppVersionTest();
 }
 
 /**
@@ -1254,7 +1257,7 @@ void MainWindow::initTagButtonScrollArea() {
     _noteTagButtonScrollArea->setContentsMargins(0, 0, 0, 0);
 
 #ifdef Q_OS_MAC
-    // we need to set a minimum height under OS X or else the scroll area
+    // we need to set a minimum height under macOS or else the scroll area
     // will be far to high
     _noteTagButtonScrollArea->setMinimumHeight(36);
 #endif
@@ -1339,7 +1342,7 @@ void MainWindow::initEditorSoftWrap() {
  * Reloads all tasks from the ownCloud server
  */
 void MainWindow::reloadTodoLists() {
-    if (!OwnCloudService::isTodoCalendarSupportEnabled()) {
+    if (!CloudService::isTodoCalendarSupportEnabled()) {
         return;
     }
 
@@ -1349,12 +1352,12 @@ void MainWindow::reloadTodoLists() {
     QString serverUrl = CloudConnection::currentCloudConnection().getServerUrl();
 
     if (calendars.count() > 0 && !serverUrl.isEmpty()) {
-        OwnCloudService *ownCloud = OwnCloudService::instance();
+        CloudService *cloud = CloudService::instance();
 
         QListIterator<QString> itr(calendars);
         while (itr.hasNext()) {
             QString calendar = itr.next();
-            ownCloud->todoGetTodoList(calendar, nullptr);
+            cloud->todoGetTodoList(calendar, nullptr);
         }
 
         showStatusBarMessage(tr("Your tasks are being loaded from your server"),
@@ -1759,7 +1762,7 @@ void MainWindow::initStyling() {
     }
 
 #ifdef Q_OS_MAC
-    // no stylesheets needed for OS X, the margins doesn't work the same there
+    // no stylesheets needed for macOS, the margins doesn't work the same there
     ui->tagFrame->setStyleSheet(QString());
     ui->notesListFrame->setStyleSheet(QString());
     ui->noteListSubFrame->setStyleSheet(QString());
@@ -1768,7 +1771,7 @@ void MainWindow::initStyling() {
     ui->navigationTabWidget->setStyleSheet(QString());
     ui->noteViewFrame->setStyleSheet(QString());
 
-    // add some margins in OS X to match the styling of the note list
+    // add some margins in macOS to match the styling of the note list
     ui->navigationFrame->setContentsMargins(3, 0, 3, 0);
 
     // add a padding for the note tag frame so the `add tag` button doesn't
@@ -2367,7 +2370,7 @@ void MainWindow::readSettings() {
 
     // let us select a folder if we haven't found one in the settings
     if (this->notesPath.isEmpty()) {
-        selectOwnCloudNotesFolder();
+        selectCloudNotesFolder();
     }
 
     // migration: remove notes path from recent note folders
@@ -2721,7 +2724,7 @@ void MainWindow::readSettingsFromSettingsDialog(const bool isAppLaunch) {
     }
 
     // reset cloud service instance
-    OwnCloudService::instance(true);
+    CloudService::instance(true);
 
     if (!isAppLaunch) {
         // the notes need to be reloaded and subfolder panel needs to be populated
@@ -2866,7 +2869,10 @@ void MainWindow::autoReadOnlyModeTimerSlot() {
     startAutoReadOnlyModeIfEnabled();
 }
 
-void MainWindow::storeUpdatedNotesToDisk() { _noteIndexManager->storeUpdatedNotesToDisk(); }
+void MainWindow::storeUpdatedNotesToDisk() {
+    noteTextEditTextWasUpdated();
+    _noteIndexManager->storeUpdatedNotesToDisk();
+}
 
 /**
  * Shows alerts for calendar items with an alarm date in the current minute
@@ -3062,7 +3068,7 @@ void MainWindow::updateBacklinkNavigationTab() {
     _navigationManager->updateBacklinkNavigationTab();
 }
 
-QString MainWindow::selectOwnCloudNotesFolder() {
+QString MainWindow::selectCloudNotesFolder() {
     QString path = this->notesPath;
 
     if (path.isEmpty()) {
@@ -3097,11 +3103,11 @@ QString MainWindow::selectOwnCloudNotesFolder() {
         if (this->notesPath.isEmpty()) {
             if (QMessageBox::question(
                     this, tr("No folder was selected"),
-                    Utils::Misc::replaceOwnCloudText(tr("You have to select your ownCloud notes "
-                                                        "folder to make this software work!")),
+                    tr("You have to select your Nextcloud / ownCloud notes folder to make this "
+                       "software work!"),
                     QMessageBox::Retry | QMessageBox::Close,
                     QMessageBox::Retry) == QMessageBox::Retry) {
-                selectOwnCloudNotesFolder();
+                selectCloudNotesFolder();
             } else {
                 // No other way to quit the application worked
                 // in the constructor
@@ -3306,7 +3312,7 @@ void MainWindow::updateActionUiEnabled() {
     setMenuEnabled(ui->menuFormat, allowEditing);
     ui->actionPaste_image->setEnabled(allowEditing);
     ui->actionReplace_in_current_note->setEnabled(allowEditing);
-    ui->actionAutocomplete->setEnabled(allowEditing);
+    ui->actionAutocomplete->setEnabled(isNoteEditPaneEnabled());
     ui->actionSplit_note_at_cursor_position->setEnabled(allowEditing);
 
     // The note text edit context menu submenu is only enabled when the note
@@ -3794,8 +3800,8 @@ void MainWindow::createNewNote(QString name, QString text, CreateNewNoteOptions 
  * This is a public callback function for the trash dialog.
  */
 void MainWindow::restoreTrashedNoteOnServer(const QString &fileName, int timestamp) {
-    OwnCloudService *ownCloud = OwnCloudService::instance();
-    ownCloud->restoreTrashedNoteOnServer(fileName, timestamp);
+    CloudService *cloud = CloudService::instance();
+    cloud->restoreTrashedNoteOnServer(fileName, timestamp);
 }
 
 /**
@@ -3921,9 +3927,9 @@ void MainWindow::handleNoteTreeTagColoringForNote(const Note &note) {
  * @brief Updates the current folder tooltip
  */
 void MainWindow::updateCurrentFolderTooltip() {
-    ui->actionSet_ownCloud_Folder->setStatusTip(tr("Current notes folder: ") + this->notesPath);
-    ui->actionSet_ownCloud_Folder->setToolTip(tr("Set the notes folder. Current notes folder: ") +
-                                              this->notesPath);
+    ui->actionSet_Cloud_Folder->setStatusTip(tr("Current notes folder: ") + this->notesPath);
+    ui->actionSet_Cloud_Folder->setToolTip(tr("Set the notes folder. Current notes folder: ") +
+                                           this->notesPath);
 }
 
 /**
@@ -4075,7 +4081,15 @@ void MainWindow::handleTextNoteLinking(int page) {
 
     QString selectedText = textEdit->textCursor().selectedText();
     if (!selectedText.isEmpty()) {
-        dialog->setLinkName(selectedText);
+        const QString trimmedSelectedText = selectedText.trimmed();
+        const QUrl selectedUrl(trimmedSelectedText);
+
+        if (selectedUrl.isValid() && selectedUrl.scheme().startsWith(QStringLiteral("http"))) {
+            dialog->setLinkName(QString());
+            dialog->setURL(trimmedSelectedText);
+        } else {
+            dialog->setLinkName(selectedText);
+        }
     }
 
     dialog->exec();
@@ -4162,8 +4176,9 @@ bool MainWindow::preparePrintNotePrinter(QPrinter *printer) {
  * @brief Prints the content of a text document
  * @param textEdit
  */
-void MainWindow::printTextDocument(QTextDocument *textDocument) {
-    _exportPrintManager->printTextDocument(textDocument);
+void MainWindow::printTextDocument(QTextDocument *textDocument,
+                                   bool useLightEditorSchemaForDarkSchema) {
+    _exportPrintManager->printTextDocument(textDocument, useLightEditorSchemaForDarkSchema);
 }
 
 /**
@@ -4187,7 +4202,9 @@ void MainWindow::exportNoteAsPDF(QPlainTextEdit *textEdit) {
  * @brief Exports the document as PDF
  * @param doc
  */
-void MainWindow::exportNoteAsPDF(QTextDocument *doc) { _exportPrintManager->exportNoteAsPDF(doc); }
+void MainWindow::exportNoteAsPDF(QTextDocument *doc, bool useLightEditorSchemaForDarkSchema) {
+    _exportPrintManager->exportNoteAsPDF(doc, useLightEditorSchemaForDarkSchema);
+}
 
 /**
  * Shows the app metrics notification if not already shown
@@ -4221,7 +4238,7 @@ void MainWindow::showAppMetricsNotificationIfNeeded() {
  * Opens the task list dialog
  */
 void MainWindow::openTodoDialog(const QString &taskUid) {
-    if (!OwnCloudService::isTodoCalendarSupportEnabled()) {
+    if (!CloudService::isTodoCalendarSupportEnabled()) {
         QMessageBox msgBox(QMessageBox::Warning, tr("Todo lists disabled!"),
                            tr("You have disabled the todo lists.<br />"
                               "Please check your <strong>Todo</strong> "
@@ -4308,6 +4325,21 @@ void MainWindow::on_noteTextEdit_textChanged() {
 }
 
 void MainWindow::noteTextEditTextWasUpdated() {
+    if (!ui->encryptedNoteTextEdit->isHidden()) {
+        if (currentNote.storeNewDecryptedText(ui->encryptedNoteTextEdit->toPlainText())) {
+            currentNote.refetch();
+            currentNoteLastEdited = QDateTime::currentDateTime();
+            _noteViewNeedsUpdate = true;
+
+            ScriptingService::instance()->onCurrentNoteChanged(&currentNote);
+
+            updateNoteEncryptionUI();
+            handleNoteTextChanged();
+        }
+
+        return;
+    }
+
     Note note = this->currentNote;
     note.updateNoteTextFromDisk();
 
@@ -4359,7 +4391,7 @@ void MainWindow::quitApp() {
     QApplication::quit();
 }
 
-void MainWindow::on_actionSet_ownCloud_Folder_triggered() {
+void MainWindow::on_actionSet_Cloud_Folder_triggered() {
     // store updated notes to disk
     storeUpdatedNotesToDisk();
 
@@ -4589,12 +4621,11 @@ void MainWindow::on_actionShow_versions_triggered() {
 
     ui->actionShow_versions->setDisabled(true);
     showStatusBarMessage(
-        Utils::Misc::replaceOwnCloudText(tr("Note versions are currently loaded from your ownCloud "
-                                            "server")),
+        tr("Note versions are currently loaded from your Nextcloud / ownCloud server"),
         QStringLiteral("🛜"), 20000);
 
-    OwnCloudService *ownCloud = OwnCloudService::instance();
-    ownCloud->loadVersions(this->currentNote.relativeNoteFilePath(QStringLiteral("/")));
+    CloudService *cloud = CloudService::instance();
+    cloud->loadVersions(this->currentNote.relativeNoteFilePath(QStringLiteral("/")));
 }
 
 void MainWindow::enableShowVersionsButton() { ui->actionShow_versions->setDisabled(false); }
@@ -4602,12 +4633,11 @@ void MainWindow::enableShowVersionsButton() { ui->actionShow_versions->setDisabl
 void MainWindow::on_actionShow_trash_triggered() {
     ui->actionShow_trash->setDisabled(true);
     showStatusBarMessage(
-        Utils::Misc::replaceOwnCloudText(tr("Trashed notes are currently loaded from your ownCloud"
-                                            " server")),
+        tr("Trashed notes are currently loaded from your Nextcloud / ownCloud server"),
         QStringLiteral("🗑"), 20000);
 
-    OwnCloudService *ownCloud = OwnCloudService::instance();
-    ownCloud->loadTrash();
+    CloudService *cloud = CloudService::instance();
+    cloud->loadTrash();
 }
 
 void MainWindow::enableShowTrashButton() { ui->actionShow_trash->setDisabled(false); }
@@ -5230,6 +5260,64 @@ void MainWindow::on_actionOpen_note_bookmark_dialog_triggered() {
  * Inserts a code block at the current cursor position
  */
 void MainWindow::on_actionInsert_code_block_triggered() { activeNoteTextEdit()->insertCodeBlock(); }
+
+/**
+ * Inserts a checkbox list item marker at the beginning of the current text block
+ */
+void MainWindow::on_actionInsert_checkbox_list_item_triggered() {
+    auto *textEdit = activeNoteTextEdit();
+    QTextCursor cursor = textEdit->textCursor();
+    const int cursorPosition = cursor.position();
+    const QTextBlock block = cursor.block();
+    const QString blockText = block.text();
+
+    int indentLength = 0;
+    while (indentLength < blockText.length() && (blockText.at(indentLength) == QLatin1Char(' ') ||
+                                                 blockText.at(indentLength) == QLatin1Char('\t'))) {
+        ++indentLength;
+    }
+
+    const int markerPosition = block.position() + indentLength;
+    const QString textAfterIndent = blockText.mid(indentLength);
+    const auto checkboxMarkerLength = [](const QString &text) {
+        if (text.startsWith(QStringLiteral("- [ ] ")) ||
+            text.startsWith(QStringLiteral("- [x] ")) ||
+            text.startsWith(QStringLiteral("- [X] "))) {
+            return 6;
+        }
+
+        if (text == QStringLiteral("- [ ]") || text == QStringLiteral("- [x]") ||
+            text == QStringLiteral("- [X]")) {
+            return 5;
+        }
+
+        return 0;
+    };
+
+    const int replaceLength = checkboxMarkerLength(textAfterIndent);
+    const QString replacementText =
+        replaceLength > 0 ? QStringLiteral("- ") : QStringLiteral("- [ ] ");
+    const int markerLength = replaceLength > 0
+                                 ? replaceLength
+                                 : (textAfterIndent.startsWith(QStringLiteral("- ")) ? 2 : 0);
+
+    cursor.setPosition(markerPosition);
+    if (markerLength > 0) {
+        cursor.setPosition(markerPosition + markerLength, QTextCursor::KeepAnchor);
+    }
+
+    cursor.insertText(replacementText);
+
+    int newCursorPosition = cursorPosition;
+    if (cursorPosition >= markerPosition + markerLength) {
+        newCursorPosition += replacementText.length() - markerLength;
+    } else if (cursorPosition > markerPosition) {
+        newCursorPosition = markerPosition + replacementText.length();
+    }
+
+    cursor.setPosition(newCursorPosition);
+    textEdit->setTextCursor(cursor);
+}
 
 void MainWindow::on_actionNext_note_triggered() { gotoNextNote(); }
 
@@ -6481,7 +6569,7 @@ void MainWindow::on_actionShare_note_triggered() {
 
     ShareDialog *dialog = new ShareDialog(currentNote, this);
     dialog->exec();
-    OwnCloudService::instance()->unsetShareDialog();
+    CloudService::instance()->unsetShareDialog();
     delete (dialog);
 
     currentNote.refetch();
@@ -6578,7 +6666,7 @@ void MainWindow::initShortcuts() {
             // if the menu bar is not visible (like for the Unity
             // desktop) create a workaround with a QShortcut so the
             // shortcuts are still working
-            // we don't do that under OS X, it causes all shortcuts
+            // we don't do that under macOS, it causes all shortcuts
             // to not be viewed
             if (!menuBarIsVisible) {
                 shortcut = action->shortcut();
@@ -7476,6 +7564,16 @@ void MainWindow::automaticScriptUpdateCheck() {
         showStatusBarMessage(tr("A script update was found!"), QStringLiteral("🔧"), 4000);
         delete (dialog);
 
+        SettingsService settings;
+        if (settings.value(QStringLiteral("automaticScriptUpdates")).toBool()) {
+            const int updateCount = ScriptRepositoryDialog::updateAllScriptUpdates(this);
+            if (updateCount > 0) {
+                showStatusBarMessage(tr("%n script update(s) were installed", "", updateCount),
+                                     QStringLiteral("🔧"), 4000);
+            }
+            return;
+        }
+
         if (Utils::Gui::question(this, tr("Script updates"),
                                  tr("Updates to your scripts were found in the script "
                                     "repository! Do you want to update them?"),
@@ -7725,8 +7823,8 @@ void MainWindow::on_actionJump_to_note_subfolder_panel_triggered() {
 void MainWindow::on_actionActivate_context_menu_triggered() { activateContextMenu(); }
 
 void MainWindow::on_actionImport_bookmarks_from_server_triggered() {
-    OwnCloudService *ownCloud = OwnCloudService::instance();
-    ownCloud->fetchBookmarks();
+    CloudService *cloud = CloudService::instance();
+    cloud->fetchBookmarks();
 }
 
 void MainWindow::on_actionElementMatrix_triggered() {
@@ -7977,7 +8075,7 @@ bool MainWindow::nextCloudDeckCheck() {
                     "Nextcloud Deck support is not enabled or the settings are invalid.<br />"
                     "Please check your <strong>Nextcloud</strong> configuration in the settings!"),
                 QMessageBox::Open | QMessageBox::Cancel, QMessageBox::Open) == QMessageBox::Open) {
-            openSettingsDialog(SettingsDialog::OwnCloudPage);
+            openSettingsDialog(SettingsDialog::CloudPage);
         }
 
         return false;

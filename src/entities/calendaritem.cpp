@@ -1,7 +1,7 @@
 #include "calendaritem.h"
 
 #include <qregularexpression.h>
-#include <services/owncloudservice.h>
+#include <services/cloudservice.h>
 #include <utils/misc.h>
 
 #include <QApplication>
@@ -290,9 +290,13 @@ QList<CalendarItem> CalendarItem::fetchAllByCalendar(const QString &calendar) {
 
 QList<CalendarItem> CalendarItem::fetchAll() {
     QSqlDatabase db = QSqlDatabase::database(QStringLiteral("disk"));
-    QSqlQuery query(db);
-
     QList<CalendarItem> calendarItemList;
+
+    if (!db.tables().contains(QStringLiteral("calendarItem"), Qt::CaseInsensitive)) {
+        return calendarItemList;
+    }
+
+    QSqlQuery query(db);
 
     query.prepare(QStringLiteral("SELECT * FROM calendarItem"));
     if (!query.exec()) {
@@ -1142,7 +1146,7 @@ QString CalendarItem::getCurrentCalendarUrl() {
  * Shows alerts for calendar items with an alarm date in the current minute
  */
 void CalendarItem::alertTodoReminders() {
-    if (!OwnCloudService::isTodoCalendarSupportEnabled()) {
+    if (!CloudService::isTodoCalendarSupportEnabled()) {
         return;
     }
 
