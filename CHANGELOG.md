@@ -1,5 +1,165 @@
 # QOwnNotes Changelog
 
+## 26.6.3
+
+- Added a compact web application connection status indicator to the main window
+  status bar when web application support is enabled; right-clicking it now shows
+  a context menu with a **Connected systems** submenu
+  (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+
+## 26.6.2
+
+- Fixed custom shortcuts for actions that appear in multiple menus, such as
+  **Find text in notes**, being treated as their default shortcut in the
+  **Shortcuts** settings page; shortcut initialization now processes each
+  action only once and the **Shortcuts** settings page only shows one row per
+  action, so restored custom shortcuts no longer overwrite the stored default
+  shortcut used for visual marking and reset handling
+  (for [#3619](https://github.com/pbek/QOwnNotes/issues/3619))
+- Fixed a possible crash when changing **Icons** checkboxes in the **Color modes**
+  settings by avoiding unnecessary web application client restarts for unrelated
+  settings changes, and removed obsolete restart tooltips from the icon settings
+  because those changes now apply live (for [#3630](https://github.com/pbek/QOwnNotes/issues/3630))
+- Fixed a crash when saving the settings dialog after enabling **Enable logging
+  to file** while the web application client service was disabled, and now show
+  the real **Log file path** directly below the checkbox from the start
+  (for [#3634](https://github.com/pbek/QOwnNotes/issues/3634))
+- Improved bash shell completion by completing proper short and long command line
+  options, shell names for `--completion`, and filenames for `--decrypt-note`
+  (for [#3633](https://github.com/pbek/QOwnNotes/issues/3633))
+
+## 26.6.1
+
+- Fixed settings search highlight not being visible for checkboxes, radio
+  buttons, group boxes, and push buttons when Windows OS dark mode is active
+  but QOwnNotes uses a light palette; the highlighted widget text was rendered
+  in a light foreground color by the native Windows style, making it invisible
+  against the light-amber highlight background; an explicit foreground color is
+  now always set alongside the background color in the highlight stylesheet
+  (for [#3631](https://github.com/pbek/QOwnNotes/issues/3631))
+- Renamed the built-in **Light** color mode to **System**, because there is no
+  real "Light mode"; existing settings storing the name `Light` are automatically
+  migrated to `System` on startup (for [#3526](https://github.com/pbek/QOwnNotes/issues/3526))
+- Fixed a crash on Windows 11 when opening the Settings dialog caused by a null
+  pointer dereference on the WebSocket object inside `sendRegister()` and
+  `sendRequestConnectedDevices()` — these methods were called during settings
+  initialisation even when the web application feature was disabled and the
+  socket was never created (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+
+## 26.6.0
+
+- Added **Connection name** setting to the web application settings, defaulting to
+  `qownnotes-<username>-<hostname>`; the name is sent to the relay server on connect
+  so other devices in the same room can identify this desktop instance
+  (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+- Added a **Test connection** button to the web application settings that shows
+  whether QOwnNotes is currently connected to the web application server
+  (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+- Added a **Connected devices** list to the web application settings that shows
+  all devices currently connected to the same token; a **Refresh** button requests
+  an updated list from the server
+  (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+- Removed the intrusive warning dialog that appeared when more than two
+  connections used the same token — the connected devices list now surfaces
+  this information without interrupting the user
+  (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+- Changes to the web application settings (server URL, security token, enable
+  toggle) now take effect immediately without restarting the application
+  (for [#3632](https://github.com/pbek/QOwnNotes/issues/3632))
+- Fixed CLI password prompt for `--decrypt-note` to mask input with asterisks
+  instead of echoing characters, while still providing typing feedback
+  (for [#3629](https://github.com/pbek/QOwnNotes/issues/3629))
+- Fixed CLI arguments like `--decrypt-note`, `--help`, `--dump-settings` and
+  `--completion` now work without a graphical environment (no `DISPLAY` needed)
+  by using `QCoreApplication` instead of `QApplication` for headless CLI modes
+  (for [#3629](https://github.com/pbek/QOwnNotes/issues/3629))
+
+## 26.5.17
+
+- Added a command line option `--decrypt-note <file>` to print the decrypted text
+  of an encrypted note file to stdout, with `--decrypt-note-password <password>`
+  for providing the password directly instead of being prompted
+  (for [#3629](https://github.com/pbek/QOwnNotes/issues/3629))
+- Fixed the **Ignore all external note folder changes** setting still allowing
+  note folder watcher paths and delayed external-change re-indexes to trigger
+  repeated note folder reloads while notes were stored, especially on Windows
+  network drives (for [#3587](https://github.com/pbek/QOwnNotes/issues/3587))
+- Fixed resetting shortcuts in the **Shortcuts** settings page back to their
+  defaults, such as restoring **Move up in note list** to `Alt+Up`, not being
+  persisted when an explicit empty shortcut setting existed; fixed custom
+  actions without a default shortcut being stored as explicit empty shortcut
+  settings after saving the **Shortcuts** settings page; existing empty
+  custom-action shortcut settings are now removed when the actions are loaded
+  (for [#3619](https://github.com/pbek/QOwnNotes/issues/3619))
+- Added more French, Spanish, Korean translation (thank you, jd-develop,
+  AlejandroMoc, VenusGirl)
+
+## 26.5.16
+
+- Fixed a memory leak when switching between notes, especially noticeable with
+  large encrypted notes, by reusing the scripting current-note API object instead
+  of allocating a new one on every note change, releasing temporary note objects
+  from note-store script hooks, and clearing the decrypted encrypted-note editor
+  plus undo history when switching back to the regular editor; encrypted-note
+  typing now also avoids writing and refetching the full decrypted note text from
+  the in-memory database on every keystroke (for [#3627](https://github.com/pbek/QOwnNotes/issues/3627))
+- Fixed solving equations like `1+1=` with `Ctrl+Space` in the note text edit
+  when the Markdown LSP completion provider was enabled or when note editing was
+  disabled; the normal equation-solving autocomplete flow now takes precedence
+  (for [#3625](https://github.com/pbek/QOwnNotes/issues/3625))
+  - Fixed toggling checkbox list items with `Ctrl+Space` when note editing was
+    disabled
+- Fixed a limitation where note text search required at least 2 characters to
+  start searching; this also affected OR searches, where each individual term
+  had to be at least 2 characters long to trigger the search
+  (for [#3624](https://github.com/pbek/QOwnNotes/issues/3624))
+
+## 26.5.15
+
+- Added a warning comment before the encrypted text markers in encrypted notes
+  to inform users that the content between the `BEGIN ENCRYPTED TEXT` and
+  `END ENCRYPTED TEXT` markers must not be edited manually; the warning comment
+  is stripped when decrypting so it is never shown to the user or re-encrypted
+  (for [#3621](https://github.com/pbek/QOwnNotes/issues/3621))
+- Added per-script hook execution time profiling for performance diagnostics
+  (for [#3620](https://github.com/pbek/QOwnNotes/issues/3620))
+  - When debug logging is enabled all hook invocation times are logged
+    unconditionally via `qDebug()`
+  - When debug logging is not active, only hook invocations that exceed a
+    configurable threshold are logged as warnings
+  - The threshold (default 500 ms) can be configured in the new
+    **Script hook execution time warning threshold** spinbox in the
+    **Debug options** settings page
+  - External-process scripting functions (`startDetachedProcess`,
+    `startSynchronousProcess`) are intentionally excluded from profiling
+    because their runtime is dominated by the child process, not the
+    scripting engine
+  - Log messages have the form: `[script profiler] <script-name> :: <hookName> took <N> ms`
+
+## 26.5.14
+
+- Fixed changed shortcuts not being saved from the **Shortcuts** settings page
+  after the recent lazy-loading performance change; shortcut storage now reads
+  the built shortcut tree directly again instead of relying on cached widget maps,
+  settings are now stored from dialog acceptance so the OK button cannot bypass
+  shortcut persistence, and edited shortcut values are captured directly from
+  the shortcut widgets and stored in portable format
+  (for [#3619](https://github.com/pbek/QOwnNotes/issues/3619))
+- Allow `Ctrl+Space` in read-only mode to ask whether note editing should be
+  enabled again when there is no URL to open at the current cursor position
+
+## 26.5.13
+
+- Improved autosaving encrypted notes by running the expensive Botan encryption
+  step in a worker thread, keeping typing responsive while encrypted notes are
+  saved and avoiding overwriting newer edits made during encryption
+  (for [#3617](https://github.com/pbek/QOwnNotes/issues/3617))
+- Fixed unchanged encrypted notes being marked dirty and rewritten on every
+  `Ctrl+S` while editing encrypted notes, which changed their file modification
+  date and repeatedly showed `Stored 1 note(s) to disk`; encrypted note files
+  are now also protected from being truncated to 0 bytes before save validation
+  runs (for [#3616](https://github.com/pbek/QOwnNotes/issues/3616))
+
 ## 26.5.12
 
 - Added a native **Diff selected notes** note-list context menu action using a

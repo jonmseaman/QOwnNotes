@@ -72,7 +72,9 @@
 #include <QJSEngine>
 #include <QJSValueIterator>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QListWidgetItem>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPageSetupDialog>
@@ -89,6 +91,7 @@
 #include <QRegularExpressionMatchIterator>
 #include <QScreen>
 #include <QScrollBar>
+#include <QSet>
 #include <QShortcut>
 #include <QSystemTrayIcon>
 #include <QTemporaryFile>
@@ -162,6 +165,30 @@
 #include "managers/spellcheckmanager.h"
 #include "managers/systemtraymanager.h"
 #include "managers/tagmanager.h"
+
+namespace {
+QKeySequence shortcutFromSettings(const QString &shortcut) {
+    if (shortcut.isEmpty()) {
+        return QKeySequence();
+    }
+
+    QKeySequence sequence(shortcut, QKeySequence::PortableText);
+
+    if (sequence.isEmpty()) {
+        sequence = QKeySequence(shortcut, QKeySequence::NativeText);
+    }
+
+    return sequence;
+}
+
+QString webAppClientServiceSettingsKey() {
+    return QStringList{
+        Utils::Misc::isWebAppSupportEnabled() ? QStringLiteral("1") : QStringLiteral("0"),
+        WebAppClientService::getServerUrl(), WebAppClientService::getOrGenerateToken(),
+        WebAppClientService::getOrGenerateConnectionName()}
+        .join(QChar::LineFeed);
+}
+}    // namespace
 
 static MainWindow *s_self = nullptr;
 
@@ -261,8 +288,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     _noteSubFolderDockWidgetVisible = true;
     _noteExternallyRemovedCheckEnabled = true;
     _readOnlyButton = new QPushButton(this);
+    _webAppStatusButton = new QPushButton(this);
     _lastNoteSelectionWasMultiple = false;
     _webSocketServerService = nullptr;
+    _webAppClientService = nullptr;
     _mcpService = nullptr;
     _closeEventWasFired = false;
     _useNoteFolderButtons = settings.value("useNoteFolderButtons").toBool();
@@ -882,7 +911,31 @@ void MainWindow::initWebSocketServerService() {
     _webSocketServerService = new WebSocketServerService();
 }
 
-void MainWindow::initWebAppClientService() { _webAppClientService = new WebAppClientService(); }
+void MainWindow::initWebAppClientService() {
+    _webAppClientServiceSettingsKey = webAppClientServiceSettingsKey();
+    _webAppClientService = new WebAppClientService();
+    connectWebAppClientServiceSignals();
+    updateWebAppStatusButton();
+}
+
+/**
+ * Reinitializes the web app client service by deleting and recreating it,
+ * which causes it to re-read all settings (server URL, token, connection name)
+ * and reconnect — so no application restart is needed when web app settings change
+ */
+void MainWindow::reinitWebAppClientService() {
+    const QString settingsKey = webAppClientServiceSettingsKey();
+    if (settingsKey == _webAppClientServiceSettingsKey) {
+        return;
+    }
+
+    _webAppClientServiceSettingsKey = settingsKey;
+
+    delete _webAppClientService;
+    _webAppClientService = nullptr;
+    _webAppConnectedDevices.clear();
+    initWebAppClientService();
+}
 
 void MainWindow::initMcpService() {
     _mcpService = new McpService(this);
@@ -1818,7 +1871,9 @@ void MainWindow::applyDarkModeSettings() {
     SettingsService settings;
     const bool systemIconTheme = settings.value(QStringLiteral("systemIconTheme")).toBool();
 
-    if (!systemIconTheme) {
+    if (systemIconTheme) {
+        QIcon::setThemeName(qApp->property("systemIconThemeName").toString());
+    } else {
         const bool internalIconTheme = settings.value(QStringLiteral("internalIconTheme")).toBool();
 
 #if (QT_VERSION >= QT_VERSION_CHECK(5, 12, 0))
@@ -2560,6 +2615,10 @@ void MainWindow::restoreToolbars() {
     // initialize web app websocket connection
     QTimer::singleShot(250, this, SLOT(initWebAppClientService()));
 
+    // Reinitialize the web app client service when settings change so that
+    // token, server URL, or enable/disable changes take effect without a restart
+    connect(this, &MainWindow::settingsChanged, this, &MainWindow::reinitWebAppClientService);
+
     // Initialize MCP server
     QTimer::singleShot(300, this, SLOT(initMcpService()));
 }
@@ -2918,6 +2977,9 @@ void MainWindow::setupStatusBarWidgets() {
 
     ui->statusBar->addPermanentWidget(_noteEditLineNumberLabel);
 
+    setupWebAppStatusButton();
+    ui->statusBar->addPermanentWidget(_webAppStatusButton);
+
     /*
      * setup of update available button
      */
@@ -2933,6 +2995,77 @@ void MainWindow::setupStatusBarWidgets() {
             &MainWindow::on_actionCheck_for_updates_triggered);
 
     ui->statusBar->addPermanentWidget(_updateAvailableButton);
+}
+
+void MainWindow::setupWebAppStatusButton() {
+    _webAppStatusButton->setFlat(true);
+    _webAppStatusButton->setText(tr("Web"));
+    _webAppStatusButton->setStyleSheet(QStringLiteral("QPushButton {padding: 0 5px}"));
+    _webAppStatusButton->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    connect(_webAppStatusButton, &QWidget::customContextMenuRequested, this,
+            &MainWindow::showWebAppStatusContextMenu);
+
+    updateWebAppStatusButton();
+}
+
+void MainWindow::connectWebAppClientServiceSignals() {
+    if (_webAppClientService == nullptr) {
+        return;
+    }
+
+    connect(_webAppClientService, &WebAppClientService::connectionStateChanged, this,
+            [this](bool) { updateWebAppStatusButton(); });
+    connect(_webAppClientService, &WebAppClientService::connectedDevicesUpdated, this,
+            &MainWindow::updateWebAppConnectedDevices);
+}
+
+void MainWindow::updateWebAppStatusButton() {
+    if (_webAppStatusButton == nullptr) {
+        return;
+    }
+
+    const bool enabled = Utils::Misc::isWebAppSupportEnabled();
+    const bool connected =
+        _webAppClientService != nullptr && _webAppClientService->checkIsConnected();
+    _webAppStatusButton->setVisible(enabled);
+    _webAppStatusButton->setToolTip(connected ? tr("Web app is connected")
+                                              : tr("Web app is not connected"));
+    _webAppStatusButton->setStyleSheet(
+        connected ? QStringLiteral("QPushButton {padding: 0 5px; color: #2e7d32}")
+                  : QStringLiteral("QPushButton {padding: 0 5px; color: #b71c1c}"));
+}
+
+void MainWindow::updateWebAppConnectedDevices(const QStringList &deviceNames) {
+    _webAppConnectedDevices = deviceNames;
+    updateWebAppStatusButton();
+}
+
+void MainWindow::showWebAppStatusContextMenu(const QPoint &point) {
+    if (_webAppStatusButton == nullptr || !Utils::Misc::isWebAppSupportEnabled()) {
+        return;
+    }
+
+    const bool connected =
+        _webAppClientService != nullptr && _webAppClientService->checkIsConnected();
+    if (connected) {
+        _webAppClientService->sendRequestConnectedDevices();
+    }
+
+    QMenu menu(this);
+    menu.addAction(connected ? tr("Web app connected") : tr("Web app disconnected"))
+        ->setEnabled(false);
+
+    QMenu *connectedSystemsMenu = menu.addMenu(tr("Connected systems"));
+    if (_webAppConnectedDevices.isEmpty()) {
+        connectedSystemsMenu->addAction(tr("No connected systems"))->setEnabled(false);
+    } else {
+        for (const QString &deviceName : qAsConst(_webAppConnectedDevices)) {
+            connectedSystemsMenu->addAction(deviceName)->setEnabled(false);
+        }
+    }
+
+    menu.exec(_webAppStatusButton->mapToGlobal(point));
 }
 
 void MainWindow::initializeOpenAiActivitySpinner() {
@@ -3175,6 +3308,10 @@ void MainWindow::setCurrentNote(Note note, bool updateNoteText, bool updateSelec
     const int noteId = note.getId();
     if (currentNote.exists() && (currentNote.getId() != noteId)) {
         this->noteHistory.updateCursorPositionOfNote(this->currentNote, ui->noteTextEdit);
+
+        if (currentNote.getHasDirtyData()) {
+            storeUpdatedNotesToDisk();
+        }
     }
 
     _noteTabManager->_lastNoteId = this->currentNote.getId();
@@ -3224,7 +3361,11 @@ void MainWindow::setCurrentNote(Note note, bool updateNoteText, bool updateSelec
         this->setNoteTextFromNote(&note, false, false, true);
 
         // hide the encrypted note text edit by default and show the regular one
+        const QSignalBlocker encryptedBlocker(ui->encryptedNoteTextEdit);
+        Q_UNUSED(encryptedBlocker)
         ui->encryptedNoteTextEdit->hide();
+        ui->encryptedNoteTextEdit->clear();
+        ui->encryptedNoteTextEdit->document()->clearUndoRedoStacks();
         ui->noteTextEdit->show();
     }
 
@@ -4326,14 +4467,10 @@ void MainWindow::on_noteTextEdit_textChanged() {
 
 void MainWindow::noteTextEditTextWasUpdated() {
     if (!ui->encryptedNoteTextEdit->isHidden()) {
-        if (currentNote.storeNewDecryptedText(ui->encryptedNoteTextEdit->toPlainText())) {
-            currentNote.refetch();
+        if (currentNote.storeNewDecryptedText(ui->encryptedNoteTextEdit->toPlainText(), false)) {
             currentNoteLastEdited = QDateTime::currentDateTime();
             _noteViewNeedsUpdate = true;
 
-            ScriptingService::instance()->onCurrentNoteChanged(&currentNote);
-
-            updateNoteEncryptionUI();
             handleNoteTextChanged();
         }
 
@@ -6602,6 +6739,7 @@ void MainWindow::on_actionStrike_out_text_triggered() { applyFormatter(QStringLi
  */
 void MainWindow::initShortcuts() {
     const QList<QMenu *> menus = menuList();
+    QSet<QAction *> processedActions;
     SettingsService settings;
 
     // we also have to clear the shortcuts directly, just removing the
@@ -6628,6 +6766,13 @@ void MainWindow::initShortcuts() {
                 continue;
             }
 
+            // Some actions appear in multiple menus. Process them once, so a
+            // restored custom shortcut is not captured as the default shortcut.
+            if (processedActions.contains(action)) {
+                continue;
+            }
+            processedActions.insert(action);
+
             QString oldShortcut = action->shortcut().toString();
 
 #ifdef Q_OS_MAC
@@ -6640,7 +6785,8 @@ void MainWindow::initShortcuts() {
             const bool settingFound = settings.contains(key);
 
             // try to load a key sequence from the settings
-            auto shortcut = QKeySequence(settingFound ? settings.value(key).toString() : "");
+            auto shortcut = settingFound ? shortcutFromSettings(settings.value(key).toString())
+                                         : QKeySequence();
 
             // do we can this method the first time?
             if (!_isDefaultShortcutInitialized) {
@@ -6731,13 +6877,21 @@ void MainWindow::addCustomAction(const QString &identifier, const QString &menuT
     //    ui->menuCustom_actions->show();
     QAction *action = ui->menuCustom_actions->addAction(menuText);
     action->setObjectName(QStringLiteral("customAction_") + identifier);
-    action->setData(identifier);
+    action->setData(QString());
 
     // restore the shortcut of the custom action
     SettingsService settings;
-    QKeySequence shortcut = QKeySequence(
-        settings.value(QStringLiteral("Shortcuts/MainWindow-customAction_") + identifier)
-            .toString());
+    const QString shortcutSettingsKey =
+        QStringLiteral("Shortcuts/MainWindow-customAction_") + identifier;
+
+    // Custom actions don't have a built-in default shortcut. Remove empty
+    // values that older versions could store when the shortcut page was saved.
+    if (settings.contains(shortcutSettingsKey) &&
+        settings.value(shortcutSettingsKey).toString().isEmpty()) {
+        settings.remove(shortcutSettingsKey);
+    }
+
+    QKeySequence shortcut = shortcutFromSettings(settings.value(shortcutSettingsKey).toString());
     if (!shortcut.isEmpty()) {
         action->setShortcut(shortcut);
     }

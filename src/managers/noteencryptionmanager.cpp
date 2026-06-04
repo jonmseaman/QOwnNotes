@@ -16,6 +16,7 @@
 
 #include <dialogs/filedialog.h>
 #include <dialogs/passworddialog.h>
+#include <services/scriptingservice.h>
 #include <services/settingsservice.h>
 #include <utils/gui.h>
 
@@ -248,7 +249,11 @@ void NoteEncryptionManager::on_encryptedNoteTextEdit_modificationChanged(bool ar
 
     _ui->encryptedNoteTextEdit->document()->setModified(false);
 
-    if (_mainWindow->currentNote.storeNewDecryptedText(_ui->encryptedNoteTextEdit->toPlainText())) {
+    if (_mainWindow->currentNote.storeNewDecryptedText(_ui->encryptedNoteTextEdit->toPlainText(),
+                                                       false)) {
+        _mainWindow->currentNoteLastEdited = QDateTime::currentDateTime();
+        _mainWindow->setNoteViewNeedsUpdate(true);
+
         _mainWindow->handleNoteTextChanged();
     }
 }

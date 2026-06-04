@@ -30,6 +30,7 @@ class WebApplicationSettingsWidget : public QWidget {
     void initialize();
     void readSettings();
     void storeSettings();
+    void updateConnectedDevices(const QStringList &deviceNames);
 
    signals:
     void needRestart();
@@ -42,6 +43,10 @@ class WebApplicationSettingsWidget : public QWidget {
     void on_enableWebApplicationCheckBox_toggled();
     void on_webAppTokenLineEdit_textChanged(const QString &arg1);
     void on_showQRCodeButton_clicked();
+    void on_webAppConnectionNameResetButton_clicked();
+    void on_webAppTestConnectionButton_clicked();
+    void on_refreshConnectedDevicesButton_clicked();
+    void on_webAppConnectionNameLineEdit_textChanged(const QString &arg1);
 
    private:
     Ui::WebApplicationSettingsWidget *ui;

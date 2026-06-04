@@ -16,6 +16,7 @@
 
 #include <QObject>
 #include <QSslError>
+#include <QStringList>
 #include <QTimer>
 
 class QClipboard;
@@ -30,13 +31,24 @@ class WebAppClientService : public QObject {
     explicit WebAppClientService(QObject *parent = nullptr);
     ~WebAppClientService() override;
 
+    static WebAppClientService *instance();
+
     static QString getServerUrl();
     static QString getDefaultServerUrl();
     static QString getOrGenerateToken();
+    static QString getOrGenerateConnectionName();
+    static QString generateDefaultConnectionName();
+    bool checkIsConnected() const;
+    void sendRequestConnectedDevices() const;
+    void sendRegister() const;
     void open();
     void close();
     bool sendClipboard() const;
     bool sendClipboardAsText() const;
+
+   signals:
+    void connectionStateChanged(bool connected);
+    void connectedDevicesUpdated(const QStringList &deviceNames);
 
    private slots:
     void onConnected();
@@ -47,6 +59,8 @@ class WebAppClientService : public QObject {
     void onReconnect();
 
    private:
+    static WebAppClientService *_instance;
+
     QWebSocket *_webSocket{};
     QString _clipboardMimeType;
     QString _clipboardContent;

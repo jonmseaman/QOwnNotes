@@ -12,6 +12,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFutureWatcher>
 #include <QMessageBox>
 #include <QMimeDatabase>
 #include <QQueue>
@@ -21,7 +23,10 @@
 #include <QSqlError>
 #include <QSqlRecord>
 #include <QTemporaryFile>
+#include <QThread>
 #include <QUrl>
+#include <QtConcurrent/QtConcurrentRun>
+#include <algorithm>
 #include <utility>
 
 #include "api/noteapi.h"
@@ -407,6 +412,37 @@ static QString buildNoteEncryptionEnvelope(const QString &cipherText, const QStr
         .arg(QString::number(NoteEncryptionVersion), NoteEncryptionKdf,
              QString::number(NoteEncryptionKdfIterations), salt, NoteEncryptionCipher, nonce, mac,
              cipherText);
+}
+
+static QString encryptNoteTextWithBotan(const QString &text, const QString &password) {
+    BotanWrapper botanWrapper;
+    botanWrapper.setPassword(password);
+    const QString salt = BotanWrapper::randomBytesBase64(NoteEncryptionSaltBytes);
+    const QString nonce = BotanWrapper::randomBytesBase64(NoteEncryptionNonceBytes);
+    QString mac;
+    const QString encryptedText =
+        botanWrapper.EncryptV2(text, salt, nonce, NoteEncryptionKdfIterations, &mac);
+
+    return encryptedText.isEmpty() ? encryptedText
+                                   : buildNoteEncryptionEnvelope(encryptedText, salt, nonce, mac);
+}
+
+static QString encryptNoteTextWithBotanInBackground(const QString &text, const QString &password) {
+    if (qApp == nullptr || QThread::currentThread() != qApp->thread()) {
+        return encryptNoteTextWithBotan(text, password);
+    }
+
+    QFutureWatcher<QString> watcher;
+    QEventLoop loop;
+    QObject::connect(&watcher, &QFutureWatcher<QString>::finished, &loop, &QEventLoop::quit);
+    watcher.setFuture(
+        QtConcurrent::run([text, password]() { return encryptNoteTextWithBotan(text, password); }));
+
+    if (!watcher.isFinished()) {
+        loop.exec();
+    }
+
+    return watcher.result();
 }
 }    // namespace
 
@@ -1771,10 +1807,17 @@ QStringList Note::buildQueryStringList(QString searchString, bool escapeForRegul
         queryStrings.append(escapeForRegularExpression ? QRegularExpression::escape(text) : text);
     }
 
-    // remove empty items, so the search will not run amok
+    // Remove empty items, so the search will not run amok
     queryStrings.removeAll(QLatin1String(""));
 
-    // remove duplicate query items
+    // Remove terms shorter than 2 characters — each individual search term
+    // (including OR-search terms) must have at least 2 characters
+    // (for #3624, https://github.com/pbek/QOwnNotes/issues/3624)
+    queryStrings.erase(std::remove_if(queryStrings.begin(), queryStrings.end(),
+                                      [](const QString &s) { return s.size() < 2; }),
+                       queryStrings.end());
+
+    // Remove duplicate query items
     queryStrings.removeDuplicates();
 
     return queryStrings;
@@ -1892,15 +1935,53 @@ bool Note::storeNewText(QString text) {
 
 void Note::setDecryptedText(QString text) { this->_decryptedNoteText = std::move(text); }
 
-bool Note::storeNewDecryptedText(QString text) {
-    if (text == this->_decryptedNoteText || !Utils::Misc::isNoteEditingAllowed()) {
+bool Note::storeNewDecryptedText(QString text, bool persistDecryptedText) {
+    if (!Utils::Misc::isNoteEditingAllowed()) {
         return false;
     }
 
+    const QString currentDecryptedText = _decryptedNoteText.isEmpty() && hasEncryptedNoteText()
+                                             ? fetchDecryptedNoteText()
+                                             : _decryptedNoteText;
+
+    if (text == currentDecryptedText) {
+        return false;
+    }
+
+    const bool wasDirty = _hasDirtyData;
     this->_decryptedNoteText = std::move(text);
     this->_hasDirtyData = true;
 
-    return this->store();
+    if (persistDecryptedText) {
+        return this->store();
+    }
+
+    return wasDirty || this->storeDirtyStateOnly();
+}
+
+bool Note::storeDirtyStateOnly() {
+    if (_id <= 0) {
+        return store();
+    }
+
+    const QSqlDatabase db = QSqlDatabase::database(QStringLiteral("memory"));
+    QSqlQuery query(db);
+    query.prepare(
+        QStringLiteral("UPDATE note SET has_dirty_data = :has_dirty_data, "
+                       "modified = :modified WHERE id = :id"));
+
+    const QDateTime modified = QDateTime::currentDateTime();
+    query.bindValue(QStringLiteral(":has_dirty_data"), _hasDirtyData ? 1 : 0);
+    query.bindValue(QStringLiteral(":modified"), modified);
+    query.bindValue(QStringLiteral(":id"), _id);
+
+    if (!query.exec()) {
+        qWarning() << __func__ << ": " << query.lastError();
+        return false;
+    }
+
+    _modified = modified;
+    return true;
 }
 
 /**
@@ -2090,7 +2171,6 @@ bool Note::storeNoteTextFileToDisk(bool &currentNoteTextChanged,
         _fileChecksum.clear();
     }
 
-    QFile file(fullNoteFilePath());
     QFile::OpenMode flags = QIODevice::WriteOnly;
     const SettingsService settings;
     const bool useUNIXNewline = settings.value(QStringLiteral("useUNIXNewline")).toBool();
@@ -2217,25 +2297,6 @@ bool Note::storeNoteTextFileToDisk(bool &currentNoteTextChanged,
         }
     }
 
-    qDebug() << "storing note file: " << this->_fileName;
-
-    if (!file.open(flags)) {
-        qCritical() << QObject::tr(
-                           "Could not store note file: %1 - Error "
-                           "message: %2")
-                           .arg(file.fileName(), file.errorString());
-
-#ifndef INTEGRATION_TESTS
-        MainWindow::instance()->showStatusBarMessage(
-            QObject::tr("Could not store note file: %1 - Error "
-                        "message: %2")
-                .arg(relativeNoteFilePath(), file.errorString()),
-            QStringLiteral("❌️"), 20000);
-#endif
-
-        return false;
-    }
-
     const bool fileExists = this->fileExists();
 
     // assign the tags to the new name if the name has changed
@@ -2257,8 +2318,23 @@ bool Note::storeNoteTextFileToDisk(bool &currentNoteTextChanged,
 
     // if we find a decrypted text to encrypt, then we attempt to encrypt it
     if (!_decryptedNoteText.isEmpty()) {
+        const QString decryptedNoteText = _decryptedNoteText;
         _noteText = _decryptedNoteText;
-        encryptNoteText();
+
+        encryptNoteText(false);
+
+        if (_id > 0) {
+            const Note latestNote = Note::fetch(_id);
+
+            if (latestNote.isFetched() && !latestNote._decryptedNoteText.isEmpty() &&
+                latestNote._decryptedNoteText != decryptedNoteText) {
+                qDebug()
+                    << __func__
+                    << " - encrypted note changed while encryption was running, deferring save";
+                return false;
+            }
+        }
+
         _decryptedNoteText = QLatin1String("");
     }
 
@@ -2268,10 +2344,30 @@ bool Note::storeNoteTextFileToDisk(bool &currentNoteTextChanged,
 
     // Prevent writing empty notes to disk if the note previously had content
     // This protects against accidentally overwriting notes with empty content
-    if (text.isEmpty() && _fileSize > 100 && fileExists) {
+    if (text.isEmpty() && ((_fileSize > 100 && fileExists) || oldNote.hasEncryptedNoteText())) {
         qWarning() << __func__ << " - Refusing to write empty note to disk when note previously had"
-                   << _fileSize << "bytes - file:" << file.fileName();
-        file.close();
+                   << _fileSize << "bytes - file:" << fullNoteFilePath();
+        return false;
+    }
+
+    QFile file(fullNoteFilePath());
+
+    qDebug() << "storing note file: " << this->_fileName;
+
+    if (!file.open(flags)) {
+        qCritical() << QObject::tr(
+                           "Could not store note file: %1 - Error "
+                           "message: %2")
+                           .arg(file.fileName(), file.errorString());
+
+#ifndef INTEGRATION_TESTS
+        MainWindow::instance()->showStatusBarMessage(
+            QObject::tr("Could not store note file: %1 - Error "
+                        "message: %2")
+                .arg(relativeNoteFilePath(), file.errorString()),
+            QStringLiteral("❌️"), 20000);
+#endif
+
         return false;
     }
 
@@ -2300,7 +2396,9 @@ bool Note::storeNoteTextFileToDisk(bool &currentNoteTextChanged,
     }
 
     this->_hasDirtyData = false;
-    this->_fileLastModified = QDateTime::currentDateTime();
+    const QDateTime fileLastModified = QFileInfo(fullNoteFilePath()).lastModified();
+    this->_fileLastModified =
+        fileLastModified.isValid() ? fileLastModified : QDateTime::currentDateTime();
 
     if (!fileExists || !this->_fileCreated.isValid()) {
         this->_fileCreated = this->_fileLastModified;
@@ -2846,6 +2944,10 @@ int Note::storeDirtyNotesToDisk(Note &currentNote, bool *currentNoteChanged, boo
     int count = 0;
     for (int r = 0; query.next(); r++) {
         Note note = noteFromQuery(query);
+        if (currentNote.getHasDirtyData() && (note.getId() == currentNote.getId())) {
+            note = currentNote;
+        }
+
         const QString &oldName = note.getName();
         bool wasCancelledDueToExternalModification = false;
         const bool noteWasStored = note.storeNoteTextFileToDisk(
@@ -2889,12 +2991,15 @@ int Note::storeDirtyNotesToDisk(Note &currentNote, bool *currentNoteChanged, boo
             //                Note::handleNoteRenaming(oldName, newName);
         }
 
-        // emit the signal for the QML that the note was stored
-        emit scriptingService->noteStored(
-            QVariant::fromValue(static_cast<QObject *>(NoteApi::fromNote(note))));
+        // Emit the signal for QML scripts with a temporary API object.
+        // The object can hold large note text, so don't keep it after the hook ran.
+        NoteApi *noteApi = NoteApi::fromNote(note);
+        emit scriptingService->noteStored(QVariant::fromValue(static_cast<QObject *>(noteApi)));
+        noteApi->deleteLater();
 
         // reassign currentNote if filename of currentNote has changed
         if (note.isSameFile(currentNote)) {
+            currentNote = note;
             *currentNoteChanged = true;
         }
 
@@ -4256,7 +4361,7 @@ void Note::resetChecksumStats() {
 /**
  * Encrypts the note text with the note's crypto key
  */
-QString Note::encryptNoteText() {
+QString Note::encryptNoteText(bool persist) {
     if (_noteText.isEmpty()) {
         return _noteText;
     }
@@ -4272,7 +4377,9 @@ QString Note::encryptNoteText() {
         _noteText += noteTextLines.at(1) + QStringLiteral("\n");
     }
 
-    _noteText += QStringLiteral("\n") + QStringLiteral(NOTE_TEXT_ENCRYPTION_PRE_STRING) +
+    // Add a warning comment before the encrypted block so users know not to edit it manually
+    _noteText += QStringLiteral("\n") + QStringLiteral(NOTE_TEXT_ENCRYPTION_WARNING_COMMENT) +
+                 QStringLiteral("\n\n") + QStringLiteral(NOTE_TEXT_ENCRYPTION_PRE_STRING) +
                  QStringLiteral("\n");
 
     // remove the first two lines for encryption
@@ -4297,23 +4404,16 @@ QString Note::encryptNoteText() {
     }
 
     // check if we have an external encryption method
-    QString encryptedText =
-        ScriptingService::instance()->callEncryptionHook(text, _cryptoPassword, false);
+    QString encryptedText;
+    if (ScriptingService *scriptingService = ScriptingService::instanceOrNull()) {
+        encryptedText = scriptingService->callEncryptionHook(text, _cryptoPassword, false);
+    }
 
     // check if a hook changed the text
     if (encryptedText.isEmpty()) {
         // fallback to Botan
         // encrypt the text
-        BotanWrapper botanWrapper;
-        botanWrapper.setPassword(_cryptoPassword);
-        const QString salt = BotanWrapper::randomBytesBase64(NoteEncryptionSaltBytes);
-        const QString nonce = BotanWrapper::randomBytesBase64(NoteEncryptionNonceBytes);
-        QString mac;
-        encryptedText =
-            botanWrapper.EncryptV2(text, salt, nonce, NoteEncryptionKdfIterations, &mac);
-        if (!encryptedText.isEmpty()) {
-            encryptedText = buildNoteEncryptionEnvelope(encryptedText, salt, nonce, mac);
-        }
+        encryptedText = encryptNoteTextWithBotanInBackground(text, _cryptoPassword);
 
         //    SimpleCrypt *crypto = new
         //    SimpleCrypt(static_cast<quint64>(cryptoKey)); QString
@@ -4324,8 +4424,10 @@ QString Note::encryptNoteText() {
     _noteText +=
         encryptedText + QStringLiteral("\n") + QStringLiteral(NOTE_TEXT_ENCRYPTION_POST_STRING);
 
-    // store note
-    store();
+    if (persist) {
+        // store note
+        store();
+    }
 
     return _noteText;
 }
@@ -4446,12 +4548,23 @@ QString Note::getDecryptedNoteText(
 
     // Replace the encrypted text with the decrypted text
     noteText.replace(re, decryptedNoteText);
+
+    // Strip the warning comment so it is not shown to the user and does not
+    // end up in the decrypted note text that would be re-encrypted on save;
+    // replace with a single newline to preserve the blank line after the heading
+    noteText.replace(QStringLiteral("\n") + QStringLiteral(NOTE_TEXT_ENCRYPTION_WARNING_COMMENT) +
+                         QStringLiteral("\n\n"),
+                     QStringLiteral("\n"));
+
     return noteText;
 }
 
 QString Note::decryptEncryptedNoteText(const QString &encryptedNoteText) const {
-    QString decryptedNoteText =
-        ScriptingService::instance()->callEncryptionHook(encryptedNoteText, _cryptoPassword, true);
+    QString decryptedNoteText;
+    if (ScriptingService *scriptingService = ScriptingService::instanceOrNull()) {
+        decryptedNoteText =
+            scriptingService->callEncryptionHook(encryptedNoteText, _cryptoPassword, true);
+    }
 
     if (!decryptedNoteText.isEmpty()) {
         return decryptedNoteText;

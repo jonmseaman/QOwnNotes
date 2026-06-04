@@ -7,6 +7,7 @@
 #include <utils/schema.h>
 
 #include <QApplication>
+#include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QSettings>
@@ -15,15 +16,25 @@
 #include <QtCore/QTimer>
 #include <QtGui/QStyleHints>
 #include <QtGui>
+#include <cstdio>
 #include <iostream>
 
 #include "dialogs/welcomedialog.h"
+#include "entities/note.h"
 #include "entities/notefolder.h"
 #include "helpers/nomenuiconstyle.h"
 #include "libraries/singleapplication/singleapplication.h"
 #include "mainwindow.h"
 #include "release.h"
 #include "version.h"
+
+#ifdef Q_OS_WIN
+#include <conio.h>
+#include <windows.h>
+#else
+#include <termios.h>
+#include <unistd.h>
+#endif
 
 // define the base class for SingleApplication
 #define QAPPLICATION_CLASS QApplication
@@ -101,6 +112,101 @@ inline void loadReleaseTranslations(QTranslator *translatorsRelease, const QStri
                         locale);
     // Debian and Ubuntu don't work with qt5/qt6 paths with cmake and Qt6
     loadTranslation(translatorsRelease[1], "/usr/share/QOwnNotes/translations/QOwnNotes_" + locale);
+}
+
+static int printDecryptedNoteFile(const QString &fileName, QString password) {
+    if (fileName.isEmpty()) {
+        std::cerr << "Missing note file path for --decrypt-note." << std::endl;
+        return 1;
+    }
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        std::cerr << "Could not open note file: " << fileName.toLocal8Bit().constData()
+                  << std::endl;
+        return 1;
+    }
+
+    Note note;
+    note.setNoteText(QString::fromUtf8(file.readAll()));
+
+    if (!note.hasEncryptedNoteText()) {
+        std::cerr << "Note file is not encrypted: " << fileName.toLocal8Bit().constData()
+                  << std::endl;
+        return 1;
+    }
+
+    if (password.isEmpty()) {
+        std::cerr << "Password: " << std::flush;
+        std::string passwordInput;
+#ifdef Q_OS_WIN
+        // On Windows read character-by-character using _getch() so we can print
+        // an asterisk for each key press without echoing the actual character
+        while (true) {
+            int ch = _getch();
+            if (ch == '\r' || ch == '\n') {
+                std::cerr << std::endl;
+                break;
+            } else if (ch == '\b') {
+                // Handle backspace
+                if (!passwordInput.empty()) {
+                    passwordInput.pop_back();
+                    std::cerr << "\b \b" << std::flush;
+                }
+            } else {
+                passwordInput.push_back(static_cast<char>(ch));
+                std::cerr << '*' << std::flush;
+            }
+        }
+#else
+        // On POSIX disable echo, read character-by-character to print asterisks
+        termios oldt{};
+        tcgetattr(STDIN_FILENO, &oldt);
+        termios newt = oldt;
+        newt.c_lflag &= ~(tcflag_t)(ECHO | ICANON);
+        newt.c_cc[VMIN] = 1;
+        newt.c_cc[VTIME] = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+
+        while (true) {
+            char ch = '\0';
+            if (read(STDIN_FILENO, &ch, 1) != 1) break;
+            if (ch == '\n' || ch == '\r') {
+                std::cerr << std::endl;
+                break;
+            } else if (ch == 127 || ch == '\b') {
+                // Handle backspace / delete
+                if (!passwordInput.empty()) {
+                    passwordInput.pop_back();
+                    std::cerr << "\b \b" << std::flush;
+                }
+            } else {
+                passwordInput.push_back(ch);
+                std::cerr << '*' << std::flush;
+            }
+        }
+
+        tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+#endif
+        password = QString::fromLocal8Bit(passwordInput.c_str());
+    }
+
+    if (password.isEmpty()) {
+        std::cerr << "No password provided." << std::endl;
+        return 1;
+    }
+
+    note.setCryptoPassword(password);
+    if (!note.canDecryptNoteText()) {
+        std::cerr << "Note file could not be decrypted. The password may be wrong." << std::endl;
+        return 1;
+    }
+
+    const QByteArray decryptedNoteText = note.fetchDecryptedNoteText().toUtf8();
+    fwrite(decryptedNoteText.constData(), 1, static_cast<size_t>(decryptedNoteText.size()), stdout);
+    fflush(stdout);
+
+    return 0;
 }
 
 /**
@@ -182,9 +288,21 @@ int mainStartupMisc(const QStringList &arguments) {
         "shell");
     parser.addOption(completionOption);
 
+    const QCommandLineOption decryptNoteOption(
+        QStringLiteral("decrypt-note"),
+        QCoreApplication::translate("main", "Prints the decrypted text of an encrypted note file."),
+        "file");
+    parser.addOption(decryptNoteOption);
+
+    const QCommandLineOption decryptNotePasswordOption(
+        QStringLiteral("decrypt-note-password"),
+        QCoreApplication::translate("main", "Password for --decrypt-note."), "password");
+    parser.addOption(decryptNotePasswordOption);
+
     allOptions << helpOption << portableOption << dumpSettingsOption << versionOption
                << allowMultipleInstancesOption << clearSettingsOption << sessionOption
-               << actionOption << completionOption;
+               << actionOption << completionOption << decryptNoteOption
+               << decryptNotePasswordOption;
 
     // just parse the arguments, we want no error handling
     parser.parse(arguments);
@@ -212,8 +330,15 @@ int mainStartupMisc(const QStringList &arguments) {
         return 0;    // Exit after generating the completion script
     }
 
+    if (parser.isSet(decryptNoteOption)) {
+        return printDecryptedNoteFile(parser.value(decryptNoteOption),
+                                      parser.value(decryptNotePasswordOption));
+    }
+
     Utils::Gui::applyInterfaceStyle();
     Utils::Gui::doSystemDarkModeCheck();
+
+    qApp->setProperty("systemIconThemeName", QIcon::themeName());
 
     QSettings settings;
     bool systemIconTheme = settings.value(QStringLiteral("systemIconTheme")).toBool();
@@ -476,6 +601,7 @@ int main(int argc, char *argv[]) {
     bool clearSettings = false;
     bool snap = false;
     bool allowOnlyOneAppInstance = true;
+    bool cliMode = false;
     QStringList arguments;
     QString appNameAdd = QString();
     QString session = QString();
@@ -498,10 +624,14 @@ int main(int argc, char *argv[]) {
             portable = true;
         } else if (arg == QStringLiteral("--clear-settings")) {
             clearSettings = true;
+        } else if (arg == QStringLiteral("--allow-multiple-instances")) {
+            allowOnlyOneAppInstance = false;
         } else if (arg == QStringLiteral("--help") || arg == QStringLiteral("--dump-settings") ||
                    arg == QStringLiteral("--completion") || arg == QStringLiteral("-h") ||
-                   arg == QStringLiteral("--allow-multiple-instances")) {
+                   arg == QStringLiteral("--decrypt-note") ||
+                   arg.startsWith(QStringLiteral("--decrypt-note="))) {
             allowOnlyOneAppInstance = false;
+            cliMode = true;
         } else if (arg == QStringLiteral("--after-update")) {
             qWarning() << __func__ << " - 'arg': " << arg;
 #if not defined(Q_OS_WIN)
@@ -745,10 +875,11 @@ int main(int argc, char *argv[]) {
 
         return app.exec();
     } else {
-        // use a normal QApplication if multiple instances of the app are
-        // allowed
-        QApplication app(argc, argv);
-        setAppProperties(app, release, arguments, false, snap, portable, action, session);
+        // Use QCoreApplication for CLI-only modes (no graphical environment needed),
+        // otherwise use QApplication for the full GUI
+        QScopedPointer<QCoreApplication> app(cliMode ? new QCoreApplication(argc, argv)
+                                                     : new QApplication(argc, argv));
+        setAppProperties(*app, release, arguments, false, snap, portable, action, session);
         clearDiskSettings();
 
         if (!clearSettingsKeychainReferences.isEmpty()) {
@@ -775,9 +906,9 @@ int main(int argc, char *argv[]) {
         w.show();
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-        setupSystemDarkModeChangeCheck(&app);
+        setupSystemDarkModeChangeCheck(app.get());
 #endif
 
-        return app.exec();
+        return app->exec();
     }
 }
