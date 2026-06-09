@@ -17,6 +17,7 @@
 #include <QObject>
 
 class MainWindow;
+class QOwnNotesMarkdownTextEdit;
 
 namespace Ui {
 class MainWindow;
@@ -40,7 +41,9 @@ class NavigationManager : public QObject {
     void onNavigationWidgetHeadingRenamed(int position, const QString &oldText,
                                           const QString &newText);
     void updateBacklinksAfterHeadingRename(const QString &oldHeading, const QString &newHeading);
+    void updateNoteTextStatistics();
     void noteEditCursorPositionChanged();
+    void noteEditTextChanged();
 
    public slots:
     void on_navigationLineEdit_textChanged(const QString &arg1);
@@ -48,6 +51,16 @@ class NavigationManager : public QObject {
     void on_actionJump_to_navigation_panel_triggered();
 
    private:
+    QString backlinkNavigationCacheKey() const;
+    void updateNoteTextStatistics(QOwnNotesMarkdownTextEdit *textEdit);
+
     MainWindow *_mainWindow;
     Ui::MainWindow *_ui;
+    QString _lastBacklinkNavigationCacheKey;
+    QOwnNotesMarkdownTextEdit *_lastStatisticsTextEdit = nullptr;
+    int _lastStatisticsNoteId = 0;
+    int _lastStatisticsRevision = -1;
+    int _lastCharacterCount = 0;
+    int _lastWordCount = 0;
+    int _lastLineCount = 0;
 };

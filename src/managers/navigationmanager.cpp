@@ -30,6 +30,8 @@
 #include <QRegularExpression>
 #include <QScrollBar>
 #include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QStringList>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QUrl>
@@ -108,6 +110,14 @@ void NavigationManager::updateFileNavigationTab() {
 
 void NavigationManager::updateBacklinkNavigationTab() {
     const Note note = _mainWindow->currentNote;
+    const QString cacheKey = backlinkNavigationCacheKey();
+    const bool backlinkTabVisible = _ui->navigationTabWidget->indexOf(_ui->backlinkTab) >= 0;
+    if (!backlinkTabVisible && !_lastBacklinkNavigationCacheKey.isEmpty() &&
+        (_lastBacklinkNavigationCacheKey == cacheKey)) {
+        return;
+    }
+
+    _lastBacklinkNavigationCacheKey = cacheKey;
     Note noteCopy(note);
     const quint64 requestId = ++_mainWindow->_backlinkNavigationUpdateRequestId;
     QPointer<MainWindow> window(_mainWindow);
@@ -149,6 +159,29 @@ void NavigationManager::updateBacklinkNavigationTab() {
 #endif
     });
     Q_UNUSED(future)
+}
+
+QString NavigationManager::backlinkNavigationCacheKey() const {
+    const Note note = _mainWindow->currentNote;
+    QStringList keyParts{QString::number(note.getId()), QString::number(note.getNoteSubFolderId()),
+                         note.getFileName(), note.getName()};
+
+    const QSqlDatabase db = QSqlDatabase::database(QStringLiteral("memory"), false);
+    if (!db.isValid() || !db.isOpen()) {
+        return keyParts.join(QLatin1Char('|'));
+    }
+
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT COUNT(*), MAX(modified), MAX(file_last_modified) FROM note WHERE id != :id"));
+    query.bindValue(QStringLiteral(":id"), note.getId());
+
+    if (query.exec() && query.first()) {
+        keyParts << query.value(0).toString() << query.value(1).toString()
+                 << query.value(2).toString();
+    }
+
+    return keyParts.join(QLatin1Char('|'));
 }
 
 void NavigationManager::selectNavigationItemAtPosition(int position) {
@@ -458,6 +491,7 @@ void NavigationManager::noteEditCursorPositionChanged() {
     QOwnNotesMarkdownTextEdit *textEdit = _mainWindow->activeNoteTextEdit();
     QTextCursor cursor = textEdit->textCursor();
     QString selectedText = cursor.selectedText();
+    SettingsService settings;
 
     _mainWindow->noteHistory.updateCursorPositionOfNote(_mainWindow->currentNote, textEdit);
 
@@ -480,10 +514,66 @@ void NavigationManager::noteEditCursorPositionChanged() {
     _mainWindow->_noteEditLineNumberLabel->setToolTip(toolTip);
 
     const bool autoSelect =
-        SettingsService().value(QStringLiteral("navigationPanelAutoSelect"), true).toBool();
+        settings.value(QStringLiteral("navigationPanelAutoSelect"), true).toBool();
     if (autoSelect) {
         selectNavigationItemAtPosition(NavigationWidget::headingPositionForCursor(cursor));
     }
+}
+
+void NavigationManager::updateNoteTextStatistics() {
+    if (!SettingsService().value(QStringLiteral("Editor/showNoteTextStats"), false).toBool()) {
+        _mainWindow->_noteEditStatisticsLabel->hide();
+        return;
+    }
+
+    _mainWindow->_noteEditStatisticsLabel->show();
+
+    updateNoteTextStatistics(_mainWindow->activeNoteTextEdit());
+}
+
+void NavigationManager::updateNoteTextStatistics(QOwnNotesMarkdownTextEdit *textEdit) {
+    const int noteId = _mainWindow->currentNote.getId();
+    const int revision = textEdit->document()->revision();
+    if (_lastStatisticsTextEdit == textEdit && _lastStatisticsNoteId == noteId &&
+        _lastStatisticsRevision == revision) {
+        return;
+    }
+
+    const QString noteText = textEdit->toPlainText();
+    static const QRegularExpression wordExpression(QStringLiteral("\\b\\w+\\b"),
+                                                   QRegularExpression::UseUnicodePropertiesOption);
+
+    int wordCount = 0;
+    QRegularExpressionMatchIterator matchIterator = wordExpression.globalMatch(noteText);
+    while (matchIterator.hasNext()) {
+        matchIterator.next();
+        ++wordCount;
+    }
+
+    _lastStatisticsTextEdit = textEdit;
+    _lastStatisticsNoteId = noteId;
+    _lastStatisticsRevision = revision;
+    _lastCharacterCount = noteText.size();
+    _lastWordCount = wordCount;
+    _lastLineCount = textEdit->document()->blockCount();
+
+    _mainWindow->_noteEditStatisticsLabel->setText(
+        tr("Ch %1, W %2, L %3", "Characters / Words / Lines")
+            .arg(QString::number(_lastCharacterCount), QString::number(_lastWordCount),
+                 QString::number(_lastLineCount)));
+    _mainWindow->_noteEditStatisticsLabel->setToolTip(tr("Characters %1, Words %2, Lines %3")
+                                                          .arg(QString::number(_lastCharacterCount),
+                                                               QString::number(_lastWordCount),
+                                                               QString::number(_lastLineCount)));
+}
+
+void NavigationManager::noteEditTextChanged() {
+    if (!SettingsService().value(QStringLiteral("Editor/showNoteTextStats"), false).toBool()) {
+        return;
+    }
+
+    updateNoteTextStatistics();
+    noteEditCursorPositionChanged();
 }
 
 void NavigationManager::on_actionJump_to_navigation_panel_triggered() {
