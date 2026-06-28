@@ -23,7 +23,7 @@ using StringView = const QStringRef &;
 #endif
 
 class CodeToHtmlConverter {
-    enum Format { Type, Keyword, Literal, String, Comment, Builtin, Other };
+    enum Format { Type, Keyword, Literal, String, Comment, Builtin, Other, ConsolePrompt };
 
     enum Lang {
         Invalid,
@@ -52,7 +52,8 @@ class CodeToHtmlConverter {
         CodeNix,
         CodeForth,
         CodeSystemVerilog,
-        CodeGDScript
+        CodeGDScript,
+        CodeConsole
     };
 
    public:
@@ -64,6 +65,7 @@ class CodeToHtmlConverter {
 
     Q_REQUIRED_RESULT static QString escape(QChar c);
     Q_REQUIRED_RESULT static QString escapeString(StringView s);
+    Q_REQUIRED_RESULT static QString escapeString(const QString &s);
     Q_REQUIRED_RESULT static QString setFormat(StringView str, Format format);
     Q_REQUIRED_RESULT static QString setFormat(const QString &str, Format format);
     static void initCodeLangs() Q_DECL_NOTHROW;
@@ -76,6 +78,7 @@ class CodeToHtmlConverter {
     Q_REQUIRED_RESULT static int highlightWord(int i, const LangData &data, StringView input,
                                                QString &output, Format f);
     Q_REQUIRED_RESULT QString xmlHighlighter(StringView input) const;
+    Q_REQUIRED_RESULT QString consoleHighlighter(StringView input) const;
     Q_REQUIRED_RESULT QString cssHighlighter(StringView input, const LangData &types,
                                              const LangData &keywords) const;
     Q_REQUIRED_RESULT QString ymlHighlighter(StringView input) const;

@@ -2135,6 +2135,10 @@ bool Note::storeNoteTextFileToDisk() {
  */
 bool Note::storeNoteTextFileToDisk(bool &currentNoteTextChanged,
                                    bool *wasCancelledDueToExternalModification) {
+#ifdef INTEGRATION_TESTS
+    Q_UNUSED(wasCancelledDueToExternalModification)
+#endif
+
     const Note oldNote = *this;
     const QString oldName = _name;
     const QString oldNoteFilePath = fullNoteFilePath();
@@ -3064,6 +3068,28 @@ bool Note::stripTrailingSpaces(int skipLine) {
     }
 
     return wasStripped;
+}
+
+/**
+ * Ensures that the note text ends with an empty last line
+ *
+ * @return
+ */
+bool Note::ensureEmptyLastLine() {
+    if (_noteText.isEmpty() || _noteText.endsWith(QChar('\n')) || _noteText.endsWith(QChar('\r'))) {
+        return false;
+    }
+
+    _noteText.append(detectNewlineCharacters());
+
+    // Clear the checksum before storing to skip the external modification check
+    // since we're making an internal modification (adding a final newline).
+    // The checksum will be recalculated and stored after writing to disk.
+    _fileChecksum.clear();
+
+    store();
+
+    return true;
 }
 
 QString Note::detectNewlineCharacters() {
@@ -4067,6 +4093,7 @@ QString Note::textToMarkdownHtml(QString str, const QString &notesPath, int maxI
     codeStyleSheet += QStringLiteral(" .code-builtin { color: #A6E22E;}");
     codeStyleSheet += QStringLiteral(" .code-keyword { color: #F92672;}");
     codeStyleSheet += QStringLiteral(" .code-other { color: #F92672;}");
+    codeStyleSheet += QStringLiteral(" .code-console-prompt { font-weight: bold;}");
 
     // correct the strikeout tag
     result.replace(QRegularExpression(QStringLiteral("<del>([^<]+)<\\/del>")),

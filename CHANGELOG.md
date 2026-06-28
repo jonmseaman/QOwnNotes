@@ -1,5 +1,70 @@
 # QOwnNotes Changelog
 
+## 26.6.10
+
+- The **Insert checkbox list item** action now automatically uses the existing
+  **Create checkbox list** behavior when multiple lines are selected, so selected
+  lines are converted consistently with the dedicated list action
+  (for [#3610](https://github.com/pbek/QOwnNotes/issues/3610))
+
+## 26.6.9
+
+- Cleaned up remaining Qt 6 build warning noise in the application and test
+  builds, including generated KWallet proxy and fortify warning output
+  (for [#3648](https://github.com/pbek/QOwnNotes/issues/3648))
+- Fixed the missing internal `bookmarks.svg` icon resource used by the note
+  bookmark menu, so QOwnNotes no longer logs a startup warning for that icon
+  (for [#3649](https://github.com/pbek/QOwnNotes/issues/3649))
+- Improved secret storage fallback handling by keeping legacy SimpleCrypt
+  encryption compatible with pre-qtkeychain secrets and migrating old plaintext
+  secret settings to encrypted storage even when the desktop keychain is
+  unavailable (for [#3597](https://github.com/pbek/QOwnNotes/issues/3597))
+
+## 26.6.8
+
+- Added **Expand all** and **Collapse all** context menu actions to heading
+  items in the **Headings** panel, remembering the in-memory expansion state per
+  note until the application is closed (for [#2784](https://github.com/pbek/QOwnNotes/issues/2784))
+- Added **Adwaita Light** and **Adwaita Dark** editor color schemes
+  (for [#3299](https://github.com/pbek/QOwnNotes/issues/3299))
+- Added optional editor settings **Show whitespace markers** and
+  **Show line ending markers** (for [#3253](https://github.com/pbek/QOwnNotes/issues/3253))
+- There was a new release of the **QOwnNotes Web Companion browser extension**
+  [2026.6.1](https://github.com/qownnotes/web-companion/releases/tag/v2026.6.1)
+  - The extension popup no longer failed to open in Firefox after the Quasar 3 migration.
+    The background script still used the old `bexBackground()` wrapper, which became a
+    no-op in Quasar App Vite 3, so the background bridge was never created. The popup waited forever for the bridge connection and therefore never mounted its UI.
+    The background script now uses the new `createBridge()` API
+
+## 26.6.7
+
+- Added the **Send clipboard as text** action to the tray menu when web
+  application support is enabled, and to the task manager / launcher context
+  menu (for [#3371](https://github.com/pbek/QOwnNotes/issues/3371))
+
+## 26.6.6
+
+- Fixed the **Security token** dialog for the QOwnNotes Web Companion browser
+  extension to keep generated or edited tokens only when pressing **OK**, so
+  closing the dialog with **Cancel** no longer changes the token for the
+  current application session (for [#3638](https://github.com/pbek/QOwnNotes/issues/3638))
+- There was a new release of the **QOwnNotes Web Companion browser extension**
+  [2026.6.0](https://github.com/qownnotes/web-companion/releases/tag/v2026.6.0)
+  - The extension build tooling was updated to Quasar App Vite 3 / Rolldown
+  - Vue and Vue Router were updated for the new Quasar toolchain
+  - The extension popup was fixed for the updated Vue/Quasar build output
+  - The dependencies were updated
+- Added more Korean, French, Spanish translation (thank you, VenusGirl, jd-develop, AlejandroMoc)
+
+## 26.6.5
+
+- Added editor and Markdown preview syntax highlighting for fenced code blocks
+  tagged as `console` or `shell-session` (for [#3094](https://github.com/pbek/QOwnNotes/issues/3094))
+- Added an optional editor setting to ensure that the note text ends with an
+  empty last line when a note is stored (for [#3255](https://github.com/pbek/QOwnNotes/issues/3255))
+- Added more French, Korean, Spanish translation (thank you, jd-develop, VenusGirl,
+  AlejandroMoc, AnSpanishTranslator)
+
 ## 26.6.4
 
 - Added an optional editor setting to show character, word and line counts in the
