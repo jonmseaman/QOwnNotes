@@ -596,6 +596,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     connect(qApp, &QApplication::commitDataRequest, this, &MainWindow::on_action_Quit_triggered);
 #else
     // Avoid re-entering the Cocoa quit flow on macOS during session shutdown, see #3546.
+    // Still mark shutdown so closeEvent doesn't minimize to the menu bar item and block logout.
+    connect(qApp, &QApplication::commitDataRequest, this,
+            [] { qApp->setProperty("appIsShuttingDown", true); });
 #endif
 
     // Register the LogWidget::LogType type so showStatusBarMessage there doesn't throw a warning,
@@ -2376,6 +2379,10 @@ void MainWindow::updateNoteTreeWidgetItem(const Note &note, QTreeWidgetItem *not
     _noteTreeManager->updateNoteTreeWidgetItem(note, noteItem);
 }
 
+void MainWindow::updateNoteTreeWidgetItemIcon(const Note &note) {
+    _noteTreeManager->updateNoteTreeWidgetItemIcon(note);
+}
+
 /**
  * @brief makes the current note the first item in the note list without
  * reloading the whole list
@@ -3619,7 +3626,8 @@ void MainWindow::storeSettings() {
 
 void MainWindow::closeEvent(QCloseEvent *event) {
     const bool forceQuit = qApp->property("clearAppDataAndExit").toBool();
-    const bool isJustHide = showSystemTray;
+    const bool isAppShuttingDown = qApp->property("appIsShuttingDown").toBool();
+    const bool isJustHide = showSystemTray && !isAppShuttingDown;
 
 #ifdef Q_OS_MAC
     // #1113, unfortunately the closeEvent is also fired when the application
@@ -4301,7 +4309,9 @@ void MainWindow::handleTextNoteLinking(int page) {
                 newText += QStringLiteral(" ") + linkDescription;
             }
 
-            textEdit->textCursor().insertText(newText);
+            if (doNoteEditingCheck()) {
+                textEdit->textCursor().insertText(newText);
+            }
         }
     }
 
@@ -4523,6 +4533,9 @@ void MainWindow::handleNoteTextChanged() {
     } else if (Utils::Misc::isNoteListPreview()) {
         updateNoteTreeWidgetItem(currentNote);
     }
+
+    // Update the note list icon in case the leading emoji in the title changed
+    updateNoteTreeWidgetItemIcon(currentNote);
 
     const QSignalBlocker blocker(ui->noteTreeWidget);
     Q_UNUSED(blocker)
@@ -5063,6 +5076,10 @@ bool MainWindow::insertMedia(QFile *file, QString title) {
 }
 
 void MainWindow::insertNoteText(const QString &text) {
+    if (!doNoteEditingCheck()) {
+        return;
+    }
+
     QOwnNotesMarkdownTextEdit *textEdit = activeNoteTextEdit();
     QTextCursor c = textEdit->textCursor();
 
@@ -5172,6 +5189,10 @@ bool MainWindow::insertTextAsAttachment(const QString &text) {
  * Inserts a file attachment into the current note
  */
 bool MainWindow::insertAttachment(QFile *file, const QString &title, const QString &fileName) {
+    if (!doNoteEditingCheck()) {
+        return false;
+    }
+
     QString text = currentNote.getInsertAttachmentMarkdown(file, title, false, fileName);
 
     if (!text.isEmpty()) {
@@ -5781,6 +5802,10 @@ void MainWindow::handleInsertingFromMimeData(const QMimeData *mimeData) {
  * Images are also downloaded
  */
 void MainWindow::insertHtmlAsMarkdownIntoCurrentNote(QString html) {
+    if (!doNoteEditingCheck()) {
+        return;
+    }
+
     // convert html tags to Markdown
     html = Utils::Misc::htmlToMarkdown(std::move(html));
 

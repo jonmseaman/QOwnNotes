@@ -1875,6 +1875,26 @@ bool Utils::Misc::isEnableNoteTree() {
 }
 
 /**
+ * Returns if "detectLeadingEmojiInNoteTitle" is turned on
+ *
+ * @return
+ */
+bool Utils::Misc::isDetectLeadingEmojiInNoteTitle() {
+    return SettingsService().value(QStringLiteral("detectLeadingEmojiInNoteTitle"), true).toBool();
+}
+
+/**
+ * Returns if "stripLeadingEmojiFromNoteFilename" is turned on
+ *
+ * @return
+ */
+bool Utils::Misc::isStripLeadingEmojiFromNoteFilename() {
+    return SettingsService()
+        .value(QStringLiteral("stripLeadingEmojiFromNoteFilename"), true)
+        .toBool();
+}
+
+/**
  * Returns the characters to use to indent
  *
  * @return
@@ -2065,6 +2085,19 @@ QString Utils::Misc::generateDebugInformation(bool withGitHubLineBreaks, bool an
         withGitHubLineBreaks);
     output += prepareDebugInformationLine(QStringLiteral("Settings path / key"),
                                           settings.fileName(), withGitHubLineBreaks);
+    output += prepareDebugInformationLine(QStringLiteral("Settings override path"),
+                                          SettingsService::overrideSettingsFileName(),
+                                          withGitHubLineBreaks);
+    const int overrideSettingsKeysCount = SettingsService::overrideSettingsKeys().count();
+    output += prepareDebugInformationLine(QStringLiteral("Settings loaded from override"),
+                                          QString::number(overrideSettingsKeysCount),
+                                          withGitHubLineBreaks);
+    if (overrideSettingsKeysCount > 0) {
+        output += prepareDebugInformationLine(
+            QStringLiteral("Existing settings overwritten by override"),
+            QString::number(SettingsService::overrideSettingsOverwrittenKeys().count()),
+            withGitHubLineBreaks);
+    }
     output += prepareDebugInformationLine(
         QStringLiteral("Application database path"),
         QDir::toNativeSeparators(DatabaseService::getDiskDatabasePath()), withGitHubLineBreaks);
@@ -3022,6 +3055,11 @@ QString Utils::Misc::testEvernoteImportText(const QString &data) {
  * @param msg
  */
 void Utils::Misc::logToFileIfAllowed(QtMsgType msgType, const QString &msg) {
+    if (QCoreApplication::organizationName().isEmpty() ||
+        QCoreApplication::applicationName().isEmpty()) {
+        return;
+    }
+
     if (!SettingsService().value(QStringLiteral("Debug/fileLogging")).toBool()) {
         return;
     }

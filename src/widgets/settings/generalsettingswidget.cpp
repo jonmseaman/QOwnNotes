@@ -106,6 +106,8 @@ void GeneralSettingsWidget::readSettings() {
         settings.value(QStringLiteral("enableNoteChecksumChecks"), false).toBool());
     ui->newNoteAskHeadlineCheckBox->setChecked(
         settings.value(QStringLiteral("newNoteAskHeadline")).toBool());
+    ui->newNoteUseSetextHeadingsCheckBox->setChecked(
+        settings.value(QStringLiteral("newNoteUseSetextHeadings")).toBool());
     ui->useUNIXNewlineCheckBox->setChecked(
         settings.value(QStringLiteral("useUNIXNewline")).toBool());
 
@@ -150,6 +152,9 @@ void GeneralSettingsWidget::readSettings() {
         Utils::Misc::doAutomaticNoteFolderDatabaseClosing());
     ui->legacyLinkingCheckBox->setChecked(settings.value(QStringLiteral("legacyLinking")).toBool());
 
+    ui->stripLeadingEmojiFromNoteFilenameCheckBox->setChecked(
+        settings.value(QStringLiteral("stripLeadingEmojiFromNoteFilename"), true).toBool());
+
     const bool enableReadOnlyMode =
         settings.value(QStringLiteral("enableReadOnlyMode"), true).toBool();
     ui->enableReadOnlyModeCheckBox->setChecked(enableReadOnlyMode);
@@ -189,6 +194,8 @@ void GeneralSettingsWidget::storeSettings() {
                       ui->enableNoteChecksumChecks->isChecked());
     settings.setValue(QStringLiteral("newNoteAskHeadline"),
                       ui->newNoteAskHeadlineCheckBox->isChecked());
+    settings.setValue(QStringLiteral("newNoteUseSetextHeadings"),
+                      ui->newNoteUseSetextHeadingsCheckBox->isChecked());
     settings.setValue(QStringLiteral("useUNIXNewline"), ui->useUNIXNewlineCheckBox->isChecked());
 
     if (oldIgnoreAllExternalNoteFolderChanges != ignoreAllExternalNoteFolderChanges) {
@@ -239,6 +246,8 @@ void GeneralSettingsWidget::storeSettings() {
     settings.setValue(QStringLiteral("automaticNoteFolderDatabaseClosing"),
                       ui->automaticNoteFolderDatabaseClosingCheckBox->isChecked());
     settings.setValue(QStringLiteral("legacyLinking"), ui->legacyLinkingCheckBox->isChecked());
+    settings.setValue(QStringLiteral("stripLeadingEmojiFromNoteFilename"),
+                      ui->stripLeadingEmojiFromNoteFilenameCheckBox->isChecked());
     settings.setValue(QStringLiteral("enableReadOnlyMode"),
                       ui->enableReadOnlyModeCheckBox->isChecked());
     settings.setValue(QStringLiteral("startInReadOnlyMode"),

@@ -42,6 +42,7 @@ in
 
       # Packages for "just src-build"
       botan3
+      libsecret
 
       pkg-config
       libclang # for clang-format
@@ -60,6 +61,7 @@ in
       librsvg
       imagemagick
       libicns
+      gum
     ]
     ++ unstableQtPkgs;
 

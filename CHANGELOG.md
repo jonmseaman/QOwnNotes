@@ -1,7 +1,88 @@
 # QOwnNotes Changelog
 
+## 26.7.5
+
+- Fixed generated note insertions while **read-only mode** is active, so QOwnNotes
+  now asks to allow note editing before adding links, attachments, media, HTML as
+  Markdown, data-url images, or autocomplete text (for [#3659](https://github.com/pbek/QOwnNotes/issues/3659))
+- Added more French, Korean translation (thank you, jd-develop, VenusGirl)
+
+## 26.7.4
+
+- Fixed **non-breaking spaces** like `U+00A0` and `U+202F` being converted to
+  regular spaces when notes were edited and saved (for [#2839](https://github.com/pbek/QOwnNotes/issues/2839))
+- Fixed the **status bar** note path staying on the old filename after a note was
+  renamed from its header/title until switching notes (for [#3658](https://github.com/pbek/QOwnNotes/issues/3658))
+- Fixed frontmatter entries followed by the closing `---` delimiter being shown
+  as **Setext headings** in the **Navigation panel** (for [#3657](https://github.com/pbek/QOwnNotes/issues/3657))
+- Added a button to the **Debug settings** to open the active settings file in an
+  external editor on systems where the settings are stored in an editable file
+  (for [#3656](https://github.com/pbek/QOwnNotes/issues/3656))
+
+## 26.7.3
+
+- New notes now use **ATX headings** by default for generated titles, and the
+  **General settings** now include an option to use **Setext headings** instead
+  (for [#3655](https://github.com/pbek/QOwnNotes/issues/3655))
+- Fixed the **Preview panel** font scaling on **Windows** with high display scale
+  settings, so the preview no longer grows larger than the note editor at e.g.
+  300% desktop scaling (for [#3653](https://github.com/pbek/QOwnNotes/issues/3653))
+- Added emojis to the note title of the welcome notes to demonstrate emojis in
+  the note list (for [#2190](https://github.com/pbek/QOwnNotes/issues/2190))
+
+## 26.7.2
+
+- Added support for an optional settings override file, derived from the active
+  settings file name like `QOwnNotes.override.conf`, which is loaded once on
+  startup and keeps debug builds and named sessions separated; the debug
+  settings output now also shows the override path, how many settings were
+  loaded from it, and how many existing settings were overwritten
+  (for [#3654](https://github.com/pbek/QOwnNotes/issues/3654))
+- The security token for the **QOwnNotes Web Companion browser extension** is now
+  generated on first application start if no token exists yet
+  (for [web-companion#111](https://github.com/qownnotes/web-companion/issues/111))
+
+## 26.7.1
+
+- Added a new checkbox **"Don't use leading emojis in note filename"** in the
+  **General settings** (enabled by default): when a note title starts with an
+  emoji, the emoji is stripped from the generated filename so filenames stay
+  compatible with other tools (for [#2190](https://github.com/pbek/QOwnNotes/issues/2190))
+- Added a new checkbox **"Show leading emoji from note title as icon in the note
+  list"** in the **Panels settings** (enabled by default): when a note title
+  starts with an emoji, the emoji is rendered as the icon for that note in the
+  note list and note tree, replacing the standard document icon
+  (for [#2190](https://github.com/pbek/QOwnNotes/issues/2190))
+- The note text search now supports searching for note titles with spaces by using
+  quoted name filters like `n:"note title"` (for [#1890](https://github.com/pbek/QOwnNotes/issues/1890))
+
+## 26.7.0
+
+- Fixed leaving **Vim mode** insert mode with the Escape key on KDE Plasma 6.7
+  when the alternate-character keyboard overlay is enabled
+  (for [#3647](https://github.com/pbek/QOwnNotes/issues/3647))
+- Fixed quitting QOwnNotes on **macOS** when the menu bar item is enabled, so the
+  application no longer minimizes back to the menu bar during quit or session
+  shutdown and blocks shutting down the Mac (for [#3651](https://github.com/pbek/QOwnNotes/issues/3651))
+
+## 26.6.11
+
+- Fixed the Qt 5 Ubuntu Launchpad release container by pinning it to Ubuntu
+  24.04, because newer Ubuntu CDBS packages no longer ship the qmake/makefile
+  classes required by the Qt 5 source package build
+- Fixed the OBS release container `osc` workaround so it no longer corrupts
+  existing Python `import importlib` statements, and made the OBS release
+  scripts stop immediately when checkout fails
+- Fixed the Qt 6 OBS release script by removing stale Qt 5 packaging file
+  references and copying the existing `qownnotes-l10n` install file
+- Suppressed harmless Python `SyntaxWarning` output from Ubuntu 24.04's packaged
+  `osc` command in the release container
+
 ## 26.6.10
 
+- Added libsecret to the Linux build dependencies so qtkeychain can use the
+  Secret Service backend instead of falling back to KWallet on non-KDE desktops
+  (for [#3650](https://github.com/pbek/QOwnNotes/issues/3650))
 - The **Insert checkbox list item** action now automatically uses the existing
   **Create checkbox list** behavior when multiple lines are selected, so selected
   lines are converted consistently with the dedicated list action
@@ -32,9 +113,10 @@
 - There was a new release of the **QOwnNotes Web Companion browser extension**
   [2026.6.1](https://github.com/qownnotes/web-companion/releases/tag/v2026.6.1)
   - The extension popup no longer failed to open in Firefox after the Quasar 3 migration.
-    The background script still used the old `bexBackground()` wrapper, which became a
-    no-op in Quasar App Vite 3, so the background bridge was never created. The popup waited forever for the bridge connection and therefore never mounted its UI.
-    The background script now uses the new `createBridge()` API
+  - The background script still used the old `bexBackground()` wrapper, which became a
+    no-op in Quasar App Vite 3, so the background bridge was never created
+  - The popup waited forever for the bridge connection and therefore never mounted its UI
+  - The background script now uses the new `createBridge()` API
 
 ## 26.6.7
 
