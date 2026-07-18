@@ -61,6 +61,7 @@ class NoteFolderSettingsWidget : public QWidget {
     void on_noteFolderAllSubfoldersCheckBox_toggled(bool checked);
     void on_allowDifferentNoteFileNameCheckBox_toggled(bool checked);
     void on_noteFolderGitCommitCheckBox_toggled(bool checked);
+    void on_noteFolderListWidget_itemChanged(QListWidgetItem *item);
     void onSubfolderTreeItemChanged(QTreeWidgetItem *item, int column);
     void saveSubfolderTreeSelection();
 
@@ -76,6 +77,7 @@ class NoteFolderSettingsWidget : public QWidget {
                                                             const QString &text);
     QString generatePathFromCurrentNoteFolderRemotePathItem(QTreeWidgetItem *item);
     void updateSubfolderVisibility();
+    void updateNoteFolderListActiveState();
     void populateSubfolderTree();
     void populateSubfolderTreeFromDir(QTreeWidgetItem *parentItem, const QString &path,
                                       const QString &relativePath);

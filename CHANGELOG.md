@@ -1,5 +1,34 @@
 # QOwnNotes Changelog
 
+## 26.7.8
+
+- Fixed excessive system keychain (libsecret on Linux) access while typing:
+  the **LanguageTool** checker no longer re-reads and decrypts its API key on
+  every keystroke and scroll event (only when its settings actually change),
+  and the Markdown note preview no longer re-decrypts the Nextcloud/ownCloud
+  password on every debounced preview refresh unless the note actually
+  contains an unresolved Nextcloud preview image
+  (for [#3665](https://github.com/pbek/QOwnNotes/issues/3665))
+- Added a **Search in the selection only** toggle to the note text search, next
+  to **Match case sensitive**, so search and search & replace can be limited to
+  the selected text range (for [#3664](https://github.com/pbek/QOwnNotes/issues/3664))
+
+## 26.7.7
+
+- The active entry is now marked with a checkbox in the **Note folder** and
+  **Color modes** settings lists, which can also be used to set the active item
+  (for [#3663](https://github.com/pbek/QOwnNotes/issues/3663))
+- Added more Spanish, French, Korean translation (thank you, AlejandroMoc, jd-develop, VenusGirl)
+
+## 26.7.6
+
+- Nextcloud **sync conflicted-copy notes** like `TODO (conflicted copy 2026-07-10 070952).md`
+  are now marked with a warning emoji in the note list so they are easier to spot
+  (for [#3662](https://github.com/pbek/QOwnNotes/issues/3662))
+- Added a **General settings** option for the keychain access timeout, defaulting
+  to 2 seconds, so QOwnNotes falls back to SimpleCrypt legacy encryption faster
+  if the system keychain service is unavailable (for [#3661](https://github.com/pbek/QOwnNotes/issues/3661))
+
 ## 26.7.5
 
 - Fixed generated note insertions while **read-only mode** is active, so QOwnNotes

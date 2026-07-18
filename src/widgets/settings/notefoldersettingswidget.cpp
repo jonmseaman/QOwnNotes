@@ -17,6 +17,7 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QSignalBlocker>
 #include <QStatusBar>
 
 #include "dialogs/filedialog.h"
@@ -52,6 +53,8 @@ void NoteFolderSettingsWidget::initialize() {
         Q_FOREACH (NoteFolder noteFolder, noteFolders) {
             auto *item = new QListWidgetItem(noteFolder.getName());
             item->setData(Qt::UserRole, noteFolder.getId());
+            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+            item->setCheckState(noteFolder.isCurrent() ? Qt::Checked : Qt::Unchecked);
             ui->noteFolderListWidget->addItem(item);
 
             // Set the current row
@@ -63,6 +66,8 @@ void NoteFolderSettingsWidget::initialize() {
 
     // Disable the remove button if there is only one item
     ui->noteFolderRemoveButton->setEnabled(noteFoldersCount > 1);
+
+    updateNoteFolderListActiveState();
 
     // Set local path placeholder text
     ui->noteFolderLocalPathLineEdit->setPlaceholderText(Utils::Misc::defaultNotesPath());
@@ -82,6 +87,8 @@ void NoteFolderSettingsWidget::readSettings() {
     if (noteFolderListItem != nullptr) {
         ui->noteFolderListWidget->setCurrentItem(noteFolderListItem);
     }
+
+    updateNoteFolderListActiveState();
 }
 
 /**
@@ -151,6 +158,8 @@ void NoteFolderSettingsWidget::on_noteFolderAddButton_clicked() {
     if (_selectedNoteFolder.isFetched()) {
         auto *item = new QListWidgetItem(_selectedNoteFolder.getName());
         item->setData(Qt::UserRole, _selectedNoteFolder.getId());
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Unchecked);
         ui->noteFolderListWidget->addItem(item);
 
         // Set the current row
@@ -204,6 +213,7 @@ void NoteFolderSettingsWidget::on_noteFolderRemoveButton_clicked() {
             QList<NoteFolder> noteFolders = NoteFolder::fetchAll();
             if (noteFolders.count() > 0) {
                 noteFolders[0].setAsCurrent();
+                updateNoteFolderListActiveState();
             }
         }
     }
@@ -226,6 +236,7 @@ void NoteFolderSettingsWidget::on_noteFolderNameLineEdit_editingFinished() {
     _selectedNoteFolder.store();
 
     ui->noteFolderListWidget->currentItem()->setText(text);
+    updateNoteFolderListActiveState();
 }
 
 /**
@@ -273,7 +284,49 @@ void NoteFolderSettingsWidget::on_noteFolderActiveCheckBox_stateChanged(int arg1
     } else {
         _selectedNoteFolder.setAsCurrent();
         MainWindow::instance()->resetBrokenTagNotesLinkFlag();
+        updateNoteFolderListActiveState();
     }
+}
+
+void NoteFolderSettingsWidget::updateNoteFolderListActiveState() {
+    const int currentNoteFolderId = NoteFolder::currentNoteFolderId();
+    const QSignalBlocker blocker(ui->noteFolderListWidget);
+    Q_UNUSED(blocker)
+
+    for (int i = 0; i < ui->noteFolderListWidget->count(); i++) {
+        QListWidgetItem *item = ui->noteFolderListWidget->item(i);
+        const bool isCurrent = item->data(Qt::UserRole).toInt() == currentNoteFolderId;
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(isCurrent ? Qt::Checked : Qt::Unchecked);
+    }
+}
+
+void NoteFolderSettingsWidget::on_noteFolderListWidget_itemChanged(QListWidgetItem *item) {
+    if (item == nullptr) {
+        return;
+    }
+
+    const int noteFolderId = item->data(Qt::UserRole).toInt();
+    const bool isCurrent = noteFolderId == NoteFolder::currentNoteFolderId();
+
+    if (item->checkState() != Qt::Checked) {
+        if (isCurrent) {
+            updateNoteFolderListActiveState();
+        }
+
+        return;
+    }
+
+    if (!isCurrent) {
+        NoteFolder noteFolder = NoteFolder::fetch(noteFolderId);
+        noteFolder.setAsCurrent();
+        MainWindow::instance()->resetBrokenTagNotesLinkFlag();
+    }
+
+    updateNoteFolderListActiveState();
+    const QSignalBlocker blocker(ui->noteFolderActiveCheckBox);
+    Q_UNUSED(blocker)
+    ui->noteFolderActiveCheckBox->setChecked(_selectedNoteFolder.isCurrent());
 }
 
 void NoteFolderSettingsWidget::on_noteFolderRemotePathButton_clicked() {
