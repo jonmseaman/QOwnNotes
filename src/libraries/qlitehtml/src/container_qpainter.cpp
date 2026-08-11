@@ -49,6 +49,7 @@
 #include <QUrl>
 
 #include <algorithm>
+#include <limits>
 #include <set>
 
 const int kDragDistance = 5;
@@ -192,71 +193,18 @@ static Selection::Element selectionDetails(const litehtml::element::ptr &element
                                            const QString &text,
                                            const QPoint &pos)
 {
-    // If element has children, the text contains all descendant text concatenated
-    // For better precision, we should find the actual leaf child at this position
-    if (element->get_children_count() > 0) {
-        // Try to find a child leaf element that contains this position
-        const std::function<Selection::Element(litehtml::element::ptr, QPoint)> findLeaf =
-            [&findLeaf, pos](const litehtml::element::ptr &elem,
-                             const QPoint &offset) -> Selection::Element {
-            if (!elem)
-                return {};
-
-            const QRect elemPos = toQRect(elem->get_position()).translated(offset);
-
-            if (!elemPos.contains(pos))
-                return {};
-
-            // Try children first
-            for (int i = 0; i < int(elem->get_children_count()); ++i) {
-                const litehtml::element::ptr child = elem->get_child(i);
-                Selection::Element result = findLeaf(child, elemPos.topLeft());
-                if (result.element)
-                    return result;
-            }
-
-            // No children found, use this element if it has text
-            litehtml::tstring elemText;
-            elem->get_text(elemText);
-            if (!elemText.empty()) {
-                const QString textStr = QString::fromStdString(elemText);
-                const QFont &font = toQFont(elem->get_font());
-                const QFontMetrics fm(font);
-                const QPoint relativePos = pos - elemPos.topLeft();
-
-                int previous = 0;
-                for (int i = 0; i < textStr.size(); ++i) {
-                    const int width = fm.size(0, textStr.left(i + 1)).width();
-                    if ((width + previous) / 2 >= relativePos.x())
-                        return {elem, i, previous};
-                    previous = width;
-                }
-                return {elem, int(textStr.size()), previous};
-            }
-
-            return {};
-        };
-
-        const QRect elementRect = toQRect(element->get_placement());
-        Selection::Element result = findLeaf(element, elementRect.topLeft());
-        if (result.element)
-            return result;
-
-        // Fallback: return the element with index at the start
+    QTextLayout layout(text, toQFont(element->get_font()));
+    layout.beginLayout();
+    QTextLine line = layout.createLine();
+    if (!line.isValid()) {
+        layout.endLayout();
         return {element, 0, 0};
     }
+    line.setLineWidth(std::numeric_limits<qreal>::max());
+    layout.endLayout();
 
-    // Element has no children - calculate precise character position
-    const QFont &font = toQFont(element->get_font());
-    const QFontMetrics fm(font);
-    int previous = 0;
-    for (int i = 0; i < text.size(); ++i) {
-        const int width = fm.size(0, text.left(i + 1)).width();
-        if ((width + previous) / 2 >= pos.x())
-            return {element, i, previous};
-        previous = width;
-    }
-    return {element, int(text.size()), previous};
+    const int index = line.xToCursor(pos.x(), QTextLine::CursorBetweenCharacters);
+    return {element, index, qRound(line.cursorToX(index))};
 }
 
 static Selection::Element deepest_child_at_point(const litehtml::document::ptr &document,
@@ -267,74 +215,42 @@ static Selection::Element deepest_child_at_point(const litehtml::document::ptr &
     if (!document)
         return {};
 
-    const std::function<Selection::Element(litehtml::element::ptr)> firstTextLeaf =
-        [&firstTextLeaf](const litehtml::element::ptr &element) -> Selection::Element {
-        if (!element)
-            return {};
-        if (element->get_children_count() == 0) {
-            litehtml::tstring text;
-            element->get_text(text);
-            if (!text.empty())
-                return {element, 0, 0};
-            return {};
-        }
-        for (int i = 0; i < int(element->get_children_count()); ++i) {
-            const litehtml::element::ptr child = element->get_child(i);
-            Selection::Element result = firstTextLeaf(child);
-            if (result.element)
-                return result;
-        }
-        litehtml::tstring text;
-        element->get_text(text);
-        if (!text.empty())
-            return {element, 0, 0};
-        return {};
-    };
-
     // Find the element at this point
     const litehtml::element::ptr element = document->root()->get_element_by_point(pos.x(),
                                                                                   pos.y(),
                                                                                   viewportPos.x(),
                                                                                   viewportPos.y());
-    // Recursively find the deepest child that contains the point and has text
-    const std::function<Selection::Element(litehtml::element::ptr, QRect)> recursion =
-        [&recursion, pos, mode](const litehtml::element::ptr &element,
-                                const QRect &placement) -> Selection::Element {
+    // Only rendered text leaves are valid selection endpoints. Containers return
+    // concatenated descendant text, whose indices do not match their geometry.
+    const std::function<Selection::Element(litehtml::element::ptr)> recursion =
+        [&recursion, pos, mode](const litehtml::element::ptr &element) -> Selection::Element {
         if (!element)
             return {};
 
-        // First, try to find a deeper child that contains the point
-        Selection::Element deepestResult;
+        const QRect placement = toQRect(element->get_placement());
+        if (!placement.adjusted(0, 0, 1, 1).contains(pos))
+            return {};
+
         for (int i = 0; i < int(element->get_children_count()); ++i) {
-            const litehtml::element::ptr child = element->get_child(i);
-            const QRect childPlacement = toQRect(child->get_position())
-                                             .translated(placement.topLeft());
-            deepestResult = recursion(child, childPlacement);
-            if (deepestResult.element)
-                return deepestResult;
+            const Selection::Element result = recursion(element->get_child(i));
+            if (result.element)
+                return result;
         }
 
-        // No deeper child found, check if this element itself has text content
-        if (placement.contains(pos)) {
-            litehtml::tstring text;
-            element->get_text(text);
-            if (!text.empty()) {
-                return mode == Selection::Mode::Free
-                           ? selectionDetails(element,
-                                              QString::fromStdString(text),
-                                              pos - placement.topLeft())
-                           : Selection::Element({element, -1, -1});
-            }
-        }
+        if (element->get_children_count() > 0)
+            return {};
 
-        return {};
+        litehtml::tstring text;
+        element->get_text(text);
+        if (text.empty())
+            return {};
+
+        return mode == Selection::Mode::Free ? selectionDetails(element,
+                                                                QString::fromStdString(text),
+                                                                pos - placement.topLeft())
+                                             : Selection::Element({element, -1, -1});
     };
-    Selection::Element result = recursion(element,
-                                          element ? toQRect(element->get_placement()) : QRect());
-    if (result.element)
-        return result;
-
-    return firstTextLeaf(element);
+    return recursion(element);
 }
 
 // CSS: 400 == normal, 700 == bold.
@@ -551,8 +467,6 @@ void Selection::update()
         text.clear();
         segmentMap.clear();
 
-        // Treats start element as a leaf even if it isn't, because it already contains all its
-        // children
         addElement(start, end);
         if (start.element != end.element) {
             litehtml::element::ptr current = start.element;
@@ -1332,7 +1246,9 @@ QVector<QRect> DocumentContainer::mouseMoveEvent(const QPoint &documentPos,
                                                                   documentPos,
                                                                   viewportPos,
                                                                   d->m_selection.mode);
-        if (element.element) {
+        if (element.element
+            && (element.element != d->m_selection.endElem.element
+                || element.index != d->m_selection.endElem.index)) {
             redrawRects.append(
                 d->m_selection
                     .boundingRect() /*.adjusted(-1, -1, +1, +1)*/); // redraw old selection area

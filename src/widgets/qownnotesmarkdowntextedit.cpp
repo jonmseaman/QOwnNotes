@@ -74,7 +74,7 @@
 #include "version.h"
 
 namespace {
-constexpr int kFoldIndicatorPadding = 4;
+constexpr int kFoldIndicatorPadding = 2;
 QHash<QString, QSet<QString>> s_foldedHeadingStateByNoteReference;
 
 static QChar accentForDeadKey(int key) {
@@ -1186,6 +1186,16 @@ void QOwnNotesMarkdownTextEdit::insertWikiLink() {
 
 void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
     if (!Utils::Misc::isNoteEditingAllowed()) {
+        // Checkbox handling must take priority over opening a link that follows the marker.
+        if (Utils::Gui::isCheckBoxAtCursor(this)) {
+            auto *mainWindow = MainWindow::instance();
+            if (mainWindow && mainWindow->doNoteEditingCheck()) {
+                Utils::Gui::toggleCheckBoxAtCursor(this);
+            }
+
+            return;
+        }
+
         if (openLinkAtCursorPosition()) {
             MainWindow::instance()->showStatusBarMessage(
                 tr("An url was opened at the current cursor position"), QStringLiteral("📃"), 5000);
@@ -1232,6 +1242,11 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
     double resultValue;
     const bool equationSolved = solveEquation(resultValue);
 
+    // Attempt a Markdown table auto-format
+    if (Utils::Gui::autoFormatTableAtCursor(this)) {
+        return;
+    }
+
     if (!equationSolved && _markdownLspEnabled && _markdownLspClient &&
         !_markdownLspUri.isEmpty()) {
         const QTextCursor cursor = textCursor();
@@ -1242,11 +1257,6 @@ void QOwnNotesMarkdownTextEdit::onAutoCompleteRequested() {
         if (_markdownLspCompletionRequestId >= 0) {
             return;
         }
-    }
-
-    // attempt a Markdown table auto-format
-    if (Utils::Gui::autoFormatTableAtCursor(this)) {
-        return;
     }
 
     QMenu menu;
@@ -1654,7 +1664,8 @@ int QOwnNotesMarkdownTextEdit::sidebarAdditionalWidth() const {
         return 0;
     }
 
-    return fontMetrics().height() + (kFoldIndicatorPadding * 2);
+    const int indicatorSize = qMax(7, fontMetrics().height() - 8);
+    return indicatorSize + (kFoldIndicatorPadding * 2);
 }
 
 bool QOwnNotesMarkdownTextEdit::isHeadingBlock(const QTextBlock &block, int *level) {
@@ -1813,8 +1824,13 @@ void QOwnNotesMarkdownTextEdit::paintSidebar(QPainter *painter, const QRect &eve
     top += viewportMargins().top();
     int bottom = top;
 
-    const QColor iconColor = palette().color(QPalette::Active, QPalette::Text);
-    const QColor borderColor = iconColor.lighter(130);
+    const QColor gutterColor = palette().color(QPalette::Active, QPalette::Window);
+    QColor iconColor = palette().color(QPalette::Active, QPalette::WindowText);
+    if (qAbs(iconColor.lightness() - gutterColor.lightness()) < 96) {
+        iconColor = gutterColor.lightness() < 128 ? QColor(Qt::white) : QColor(Qt::black);
+    }
+    QColor borderColor = iconColor;
+    borderColor.setAlpha(180);
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);

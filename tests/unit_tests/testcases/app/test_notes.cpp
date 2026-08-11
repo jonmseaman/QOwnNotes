@@ -243,6 +243,25 @@ void TestNotes::testSearchQueryStringListModes() {
              QStringList() << QStringLiteral("note\\ book"));
     QCOMPARE(Note::buildQueryStringList(QStringLiteral("name:\"note book\""), true, true),
              QStringList() << QStringLiteral("note\\ book"));
+
+    const QVector<NoteSearchTerm> shortWordTerms =
+        Note::buildSearchTermList(QStringLiteral("w:diff"));
+    QCOMPARE(shortWordTerms.count(), 1);
+    QCOMPARE(shortWordTerms.constFirst().text, QStringLiteral("diff"));
+    QVERIFY(shortWordTerms.constFirst().wholeWord);
+    QVERIFY(!shortWordTerms.constFirst().nameOnly);
+
+    const QVector<NoteSearchTerm> longWordTerms =
+        Note::buildSearchTermList(QStringLiteral("word:\"note book\""));
+    QCOMPARE(longWordTerms.count(), 1);
+    QCOMPARE(longWordTerms.constFirst().text, QStringLiteral("note book"));
+    QVERIFY(longWordTerms.constFirst().wholeWord);
+
+    const QVector<NoteSearchTerm> combinedTerms =
+        Note::buildSearchTermList(QStringLiteral("n:w:diff"));
+    QCOMPARE(combinedTerms.count(), 1);
+    QVERIFY(combinedTerms.constFirst().wholeWord);
+    QVERIFY(combinedTerms.constFirst().nameOnly);
 }
 
 void TestNotes::testSearchInNotesModes() {
@@ -279,6 +298,43 @@ void TestNotes::testSearchInNotesModes() {
         Note::searchInNotes(QStringLiteral("name:\"") + title + QStringLiteral("\""), true);
     QVERIFY(quotedLongNameNoteIds.contains(titleMatch.getId()));
     QVERIFY(!quotedLongNameNoteIds.contains(textOnlyMatch.getId()));
+
+    QString wholeWord = uniqueTestName(QStringLiteral("wholeword"));
+    wholeWord.remove(QChar('-'));
+    const Note wholeWordMatch =
+        createTestNote(uniqueTestName(QStringLiteral("Whole word match")), 0,
+                       QStringLiteral("# Whole word match\n/%1/ and **%1**.\n").arg(wholeWord));
+    const Note substringOnlyMatch =
+        createTestNote(uniqueTestName(QStringLiteral("Substring-only match")), 0,
+                       QStringLiteral("# Substring-only match\nprefix%1suffix\n").arg(wholeWord));
+
+    const QVector<int> substringNoteIds = Note::searchInNotes(wholeWord, true);
+    QVERIFY(substringNoteIds.contains(wholeWordMatch.getId()));
+    QVERIFY(substringNoteIds.contains(substringOnlyMatch.getId()));
+
+    const QVector<int> shortWholeWordNoteIds =
+        Note::searchInNotes(QStringLiteral("w:") + wholeWord, true);
+    QVERIFY(shortWholeWordNoteIds.contains(wholeWordMatch.getId()));
+    QVERIFY(!shortWholeWordNoteIds.contains(substringOnlyMatch.getId()));
+
+    const QVector<int> longWholeWordNoteIds =
+        Note::searchInNotes(QStringLiteral("word:") + wholeWord, true);
+    QVERIFY(longWholeWordNoteIds.contains(wholeWordMatch.getId()));
+    QVERIFY(!longWholeWordNoteIds.contains(substringOnlyMatch.getId()));
+
+    const QVector<int> nameWholeWordNoteIds =
+        Note::searchInNotes(QStringLiteral("n:w:Whole"), true);
+    QVERIFY(nameWholeWordNoteIds.contains(wholeWordMatch.getId()));
+    QVERIFY(!nameWholeWordNoteIds.contains(substringOnlyMatch.getId()));
+
+    const QString unicodeName = uniqueTestName(QStringLiteral("Über search"));
+    const Note unicodeMatch = createTestNote(unicodeName, 0);
+    const QVector<int> unicodeNoteIds = Note::searchInNotes(QStringLiteral("w:über"), true);
+    QVERIFY(unicodeNoteIds.contains(unicodeMatch.getId()));
+
+    QCOMPARE(wholeWordMatch.countSearchTextInNote(
+                 Note::buildSearchTermList(QStringLiteral("w:") + wholeWord).constFirst()),
+             2);
 }
 
 void TestNotes::testMarkdownTildeCodeFenceToHtml() {
@@ -340,6 +396,20 @@ void TestNotes::testCodeToHtmlConversionPython() {
         "<span class=\"code-comment\"># this is a comment</span>\n");
 
     QVERIFY(outputPython == expectedOutputPython);
+}
+
+void TestNotes::testCodeToHtmlConversionR() {
+    const QString rCode = QStringLiteral("if (is.numeric(value)) print(TRUE) # result\n");
+    const CodeToHtmlConverter converter(QStringLiteral("r"));
+
+    const QString expected = QStringLiteral(
+        "<span class=\"code-keyword\">if</span> &#40;<span "
+        "class=\"code-builtin\">is.numeric</span>&#40;value&#41;&#41; <span "
+        "class=\"code-builtin\">print</span>&#40;<span "
+        "class=\"code-literal\">TRUE</span>&#41; <span "
+        "class=\"code-comment\"># result</span>\n");
+
+    QCOMPARE(converter.process(rCode), expected);
 }
 
 void TestNotes::testCodeToHtmlConversionHashComment() {

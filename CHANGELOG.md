@@ -1,5 +1,69 @@
 # QOwnNotes Changelog
 
+## Unreleased
+
+- There was a new release of the **QOwnNotes Web Companion browser extension**
+  [2026.8.0](https://github.com/qownnotes/web-companion/releases/tag/v2026.8.0)
+  - An error dialog now explains how to resolve a failed connection to the QOwnNotes socket server
+    (for [#120](https://github.com/qownnotes/web-companion/issues/120))
+  - The dependencies were updated
+
+## 26.8.2
+
+- Fixed <kbd>Ctrl</kbd> + <kbd>Space</kbd> no longer auto-formatting Markdown
+  tables when Markdown LSP support was enabled (for [#3685](https://github.com/pbek/QOwnNotes/issues/3685))
+- Added OpenSSL 3 to the universal macOS Qt 6 package, enabling connections to
+  TLS 1.3-only servers while retaining TLS 1.2 and certificate verification
+  support (for [#3681](https://github.com/pbek/QOwnNotes/issues/3681))
+
+## 26.8.1
+
+- In read-only mode, pressing <kbd>Ctrl</kbd> + <kbd>Space</kbd> on a linked
+  Markdown checkbox now asks to enable editing and toggles the checkbox instead
+  of opening the link (for [#3682](https://github.com/pbek/QOwnNotes/issues/3682))
+- Fixed an empty color mode ID warning when opening the **Color modes** settings
+  (for [#3526](https://github.com/pbek/QOwnNotes/issues/3526))
+- Improved the **heading folding gutter** by reducing the space between folding
+  symbols and line numbers and ensuring the symbols remain visible with mixed
+  dark application and light editor themes on Windows
+  (for [#3680](https://github.com/pbek/QOwnNotes/issues/3680))
+
+## 26.8.0
+
+- Fixed Joplin RAW import silently skipping some attachments
+  (for [#3672](https://github.com/pbek/QOwnNotes/pull/3672), thank you, @MySkeletonHurts)
+- The **Nextcloud Deck dialog** now preserves an already entered description and
+  due date when pressing Enter on an unmatched search to create a new card
+  (for [#3673](https://github.com/pbek/QOwnNotes/issues/3673))
+- [qc](https://github.com/qownnotes/qc) v0.6.3 was released
+  - `qc configure` no longer fails with `command not found` when the configured editor is not
+    installed on the system (for [#24](https://github.com/qownnotes/qc/issues/24))
+    - The editor is now resolved every time the config file is edited, falling back to the `VISUAL`
+      and `EDITOR` environment variables and then to a list of common editors
+    - A clear error message is shown when no editor could be found at all
+  - The config file path is now quoted when it is passed to the editor, so paths containing spaces
+    work as expected
+  - Update dependencies
+    - Go 1.25 is now required to build the project
+
+## 26.7.10
+
+- Improved text selection in the QLiteHtml preview by avoiding redundant
+  selection processing and full preview repaints, preserving selections while
+  dragging across whitespace, and automatically scrolling beyond the viewport
+  (for [#3668](https://github.com/pbek/QOwnNotes/issues/3668))
+
+## 26.7.9
+
+- Added syntax highlighting for **GNU R** fenced code blocks in the note editor
+  and preview (for [#2845](https://github.com/pbek/QOwnNotes/issues/2845))
+- Added the `word:` and `w:` note search operators for matching whole words
+  without changing the existing substring and quoted-phrase search behavior
+  (for [#1756](https://github.com/pbek/QOwnNotes/issues/1756))
+  - See the [searching documentation](https://www.qownnotes.org/getting-started/searching.html)
+    for more information about the new operators and how they interact with
+    existing search syntax
+
 ## 26.7.8
 
 - Fixed excessive system keychain (libsecret on Linux) access while typing:
